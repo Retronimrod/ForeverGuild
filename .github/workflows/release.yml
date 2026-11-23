@@ -1,0 +1,75 @@
+name: Publish ForeverGuild
+
+on:
+  push:
+    branches: [main]
+    paths: [ForeverGuild/ForeverGuild.toc, .github/workflows/release.yml]
+  workflow_dispatch:
+    inputs:
+      curseforge_project_id:
+        description: Optional CurseForge project ID override
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: foreverguild-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package addon
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^## Version: //p' ForeverGuild/ForeverGuild.toc | tr -d '\r')
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          file="ForeverGuild-v$version.zip"
+          zip -qr "$file" ForeverGuild
+          unzip -tq "$file"
+          printf 'tag=v%s\nfile=%s\n' "$version" "$file" >> "$GITHUB_OUTPUT"
+          sha256sum "$file"
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.build.outputs.tag }}
+          FILE: ${{ steps.build.outputs.file }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" "$FILE" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ForeverGuild $TAG" --notes-file CHANGELOG.md
+          fi
+      - name: Submit to CurseForge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN || secrets.CURSEFORGE_API_TOKEN || secrets.CURSEFORGE_TOKEN || secrets.CF_API_KEY || secrets.CURSEFORGE_API_KEY || secrets.CF_TOKEN }}
+          CF_PROJECT: ${{ inputs.curseforge_project_id || vars.CF_PROJECT_ID || vars.CURSEFORGE_PROJECT_ID || secrets.CF_PROJECT_ID || secrets.CURSEFORGE_PROJECT_ID || secrets.CURSE_PROJECT_ID }}
+          TAG: ${{ steps.build.outputs.tag }}
+          FILE: ${{ steps.build.outputs.file }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh_release_id=$(grep -oE 'CurseForge file ID [0-9]+' <<< "$(gh release view "$TAG" --json body --jq .body)" | head -n1); then
+            echo "$gh_release_id already submitted."
+            exit 0
+          fi
+          if [[ -z "$CF_TOKEN" || ! "$CF_PROJECT" =~ ^[0-9]+$ ]]; then
+            echo "::error::Configure a CurseForge token secret and numeric CF_PROJECT_ID repository variable or secret."
+            exit 1
+          fi
+          api=https://wow.curseforge.com/api
+          versions=$(curl --silent --show-error --fail --header "X-Api-Token: $CF_TOKEN" "$api/game/versions")
+          version_id=$(jq -er '[.[] | select(.name == "1.60.1")] | if length == 1 then .[0].id else error("Expected one WoW 1.60.1 version ID") end' <<< "$versions")
+          metadata=$(jq -cn --rawfile changelog CHANGELOG.md --arg tag "$TAG" --argjson version "$version_id" '{changelog:$changelog,changelogType:"markdown",displayName:("ForeverGuild "+$tag),gameVersions:[$version],releaseType:"release"}')
+          reply=$(curl --silent --show-error --fail --header "X-Api-Token: $CF_TOKEN" --form-string "metadata=$metadata" --form "file=@$FILE;type=application/zip" "$api/projects/$CF_PROJECT/upload-file")
+          id=$(jq -er '.id | numbers' <<< "$reply")
+          echo "CurseForge accepted upload as file ID $id."
+          { cat CHANGELOG.md; printf '\nCurseForge file ID %s\n' "$id"; } > "$RUNNER_TEMP/release-notes.md"
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
