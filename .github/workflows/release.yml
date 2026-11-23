@@ -5,11 +5,6 @@ on:
     branches: [main]
     paths: [ForeverGuild/ForeverGuild.toc, .github/workflows/release.yml]
   workflow_dispatch:
-    inputs:
-      curseforge_project_id:
-        description: Optional CurseForge project ID override
-        required: false
-        type: string
 
 permissions:
   contents: write
@@ -50,7 +45,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN || secrets.CURSEFORGE_API_TOKEN || secrets.CURSEFORGE_TOKEN || secrets.CF_API_KEY || secrets.CURSEFORGE_API_KEY || secrets.CF_TOKEN }}
-          CF_PROJECT: ${{ inputs.curseforge_project_id || vars.CF_PROJECT_ID || vars.CURSEFORGE_PROJECT_ID || secrets.CF_PROJECT_ID || secrets.CURSEFORGE_PROJECT_ID || secrets.CURSE_PROJECT_ID }}
+          CF_PROJECT: "1824854"
           TAG: ${{ steps.build.outputs.tag }}
           FILE: ${{ steps.build.outputs.file }}
         shell: bash
@@ -60,8 +55,8 @@ jobs:
             echo "$gh_release_id already submitted."
             exit 0
           fi
-          if [[ -z "$CF_TOKEN" || ! "$CF_PROJECT" =~ ^[0-9]+$ ]]; then
-            echo "::error::Configure a CurseForge token secret and numeric CF_PROJECT_ID repository variable or secret."
+          if [[ -z "$CF_TOKEN" ]]; then
+            echo "::error::No CurseForge upload token is available to this workflow. Configure the CF_API_TOKEN Actions secret for this repository."
             exit 1
           fi
           api=https://wow.curseforge.com/api
