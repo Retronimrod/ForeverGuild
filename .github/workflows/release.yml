@@ -44,7 +44,7 @@ jobs:
       - name: Submit to CurseForge
         env:
           GH_TOKEN: ${{ github.token }}
-          CF_TOKEN: ${{ secrets.CF_API_TOKEN || secrets.CURSEFORGE_API_TOKEN || secrets.CURSEFORGE_TOKEN || secrets.CF_API_KEY || secrets.CURSEFORGE_API_KEY || secrets.CF_TOKEN }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN || secrets.CURSEFORGE_API_TOKEN || secrets.CURSEFORGE_TOKEN || secrets.CF_API_KEY || secrets.CURSEFORGE_API_KEY || secrets.CF_TOKEN || secrets.CURSEFORGED }}
           CF_PROJECT: "1824854"
           TAG: ${{ steps.build.outputs.tag }}
           FILE: ${{ steps.build.outputs.file }}
