@@ -5,7 +5,7 @@ local bankScan, startBankScan, scanVisibleBank, requestBankSnapshot
 local lastBankRequest, lastBankReply = -60, -60
 local showOrderMenu, showOrderDialog, orderMenu, orderDialog, orderChannel
 local orderNotice, updateOrderNotice
-local addonVersion = "0.9.33"
+local addonVersion = "0.9.51"
 local settingsWindow, minimapIcon, guildShortcut
 local updateGuildShortcut
 local prefix, rolePrefix = "ForeverGuild1", "ForeverGuildRole"
@@ -39,6 +39,11 @@ end
 
 local function preference(key)
     return not ForeverGuildSettings or ForeverGuildSettings[key] ~= false
+end
+
+local function uiInCombat()
+    return (InCombatLockdown and InCombatLockdown())
+        or (UnitAffectingCombat and UnitAffectingCombat("player"))
 end
 
 local function reportError(area, err)
@@ -330,7 +335,9 @@ local function updateSkills()
 end
 
 local function scanProfession(expectedID)
-    if not trade or not trade.GetBaseProfessionInfo or not trade.GetAllRecipeIDs or not trade.GetRecipeInfo then return end
+    if not trade or not trade.GetBaseProfessionInfo or not trade.GetRecipeInfo then return end
+    local getIDs = trade.GetAllRecipeIDs or trade.GetFilteredRecipeIDs
+    if not getIDs then return end
     if trade.IsTradeSkillReady and not trade.IsTradeSkillReady() then return end
     if (trade.IsTradeSkillLinked and trade.IsTradeSkillLinked())
         or (trade.IsTradeSkillGuild and trade.IsTradeSkillGuild())
@@ -338,17 +345,27 @@ local function scanProfession(expectedID)
     local info = trade.GetBaseProfessionInfo()
     if not info or not info.professionID or not info.skillLevel or info.skillLevel < 1 then return end
     if expectedID and info.professionID ~= expectedID then return end
-    local ids = trade.GetAllRecipeIDs()
+    local ids = getIDs()
     if not ids or #ids == 0 then return end
-    local learned, totalLearned = {}, 0
+    local learned = {}
+    local previous = ForeverGuildCharacter[info.professionID]
+    if not trade.GetAllRecipeIDs and previous then
+        for id in pairs(previous.recipes or {}) do learned[id] = true end
+    end
+    local totalLearned = 0
     for _, id in ipairs(ids) do
         local recipe = trade.GetRecipeInfo(id)
         if not recipe then return end
-        if recipe.learned then
-            learned[id] = true
-            totalLearned = totalLearned + 1
+        learned[id] = recipe.learned and true or nil
+        if not addon.recipeCatalog[id] and not ForeverGuildDiscoveredRecipes[id] then
+            local ok, schematic
+            if trade.GetRecipeSchematic then ok, schematic = pcall(trade.GetRecipeSchematic, id, false) end
+            ForeverGuildDiscoveredRecipes[id] = { profession = info.professionID,
+                output = ok and schematic and schematic.outputItemID or nil,
+                name = recipe.name, locale = GetLocale() }
         end
     end
+    for _ in pairs(learned) do totalLearned = totalLearned + 1 end
     ForeverGuildCharacter[info.professionID] = {
         skill = info.skillLevel,
         maximum = info.maxSkillLevel or info.skillLevel,
@@ -532,6 +549,13 @@ end
 local recipeNames = {}
 local function recipeName(id)
     if recipeNames[id] then return recipeNames[id] end
+    local record = addon.recipeCatalog[id]
+    local locale = GetLocale()
+    if record and record.name and (locale == "deDE" or locale == "enUS" or locale == "enGB") then
+        return record.name
+    end
+    local found = ForeverGuildDiscoveredRecipes and ForeverGuildDiscoveredRecipes[id]
+    if found and found.locale == locale and found.name and found.name ~= "" then return found.name end
     local name = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(id)
     if not name or name == "" then
         local info = trade and trade.GetRecipeInfo and trade.GetRecipeInfo(id)
@@ -541,7 +565,7 @@ local function recipeName(id)
         recipeNames[id] = name
         return name
     end
-    return "#" .. id
+    return record and record.name or ("#" .. id)
 end
 
 local function updateRoster()
@@ -930,6 +954,60 @@ local function list(parent, left, top, right, bottom, width, rowHeight, tooltip)
             row.icon:SetTexture(entry.icon)
             row.tint:SetColorTexture(entry.selected and .48 or .30, .22, .10,
                 (isCard or isCategory) and 0 or (entry.selected and .65 or (index % 2 == 0 and .16 or .05)))
+            if entry.boardCard and not row.boardCard then
+                local card = panel(row, .25, nil, .96)
+                card:SetFrameLevel(row:GetFrameLevel())
+                card:SetPoint("TOPLEFT", 3, -2)
+                card:SetPoint("BOTTOMRIGHT", -4, 2)
+                row.boardCard = card
+                row.boardSubtitle = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                row.boardSubtitle:SetPoint("TOPLEFT", 46, -30)
+                row.boardSubtitle:SetPoint("RIGHT", -33, 0)
+                row.boardSubtitle:SetJustifyH("LEFT")
+                row.boardSubtitle:SetWordWrap(false)
+                row.boardArt = card:CreateTexture(nil, "ARTWORK", nil, -4)
+                row.boardArt:SetPoint("TOPRIGHT", -3, -3)
+                row.boardArt:SetWidth(208)
+                row.boardArt:SetPoint("BOTTOMRIGHT", -3, 3)
+                row.boardArt:SetAlpha(.78)
+                row.boardShade = card:CreateTexture(nil, "ARTWORK", nil, -3)
+                row.boardShade:SetAllPoints(row.boardArt)
+                row.boardShade:SetColorTexture(1, 1, 1, 1)
+                row.boardShade:SetGradient("HORIZONTAL", CreateColor(.055,.037,.025,1), CreateColor(.055,.037,.025,.10))
+                -- Keep the row text in front of the card artwork.
+                card:SetFrameLevel(math.max(0, row:GetFrameLevel() - 1))
+                row.boardPin = row:CreateTexture(nil, "OVERLAY")
+                row.boardPin:SetSize(13, 13)
+                row.boardPin:SetPoint("TOPRIGHT", -11, -7)
+                row.boardPin:SetTexture("Interface\\AddOns\\ForeverGuild\\Art\\BoardPin")
+            end
+            if row.boardCard then
+                row.boardCard:SetShown(entry.boardCard == true)
+                row.boardSubtitle:SetShown(entry.boardCard == true)
+                row.boardPin:SetShown(entry.boardCard == true)
+                row.boardArt:SetShown(entry.boardCard == true and entry.banner ~= nil)
+                row.boardShade:SetShown(entry.boardCard == true and entry.banner ~= nil)
+                if entry.banner then
+                    row.boardArt:SetTexture(entry.banner)
+                    addon.fitDungeonArtwork(row.boardArt, 208, size - 10)
+                end
+            end
+            row:GetHighlightTexture():SetAlpha(entry.boardCard and .14 or 1)
+            if entry.boardCard then
+                local frame = row.boardCard
+                if entry.selected then frame:SetBackdropBorderColor(.82, .59, .28, 1)
+                else frame:SetBackdropBorderColor(.44, .31, .21, .9) end
+                row.label:ClearAllPoints()
+                row.label:SetPoint("TOPLEFT", 46, -12)
+                row.label:SetPoint("RIGHT", -32, 0)
+                row.icon:ClearAllPoints()
+                row.icon:SetPoint("LEFT", 11, 0)
+                row.icon:SetSize(26, 26)
+                row.boardSubtitle:SetText(entry.subtitle or "")
+                local tone = entry.statusColor or { r = .76, g = .67, b = .55 }
+                row.boardSubtitle:SetTextColor(tone.r, tone.g, tone.b)
+                row.tint:SetColorTexture(0, 0, 0, 0)
+            end
             row:Show()
         end
         for index = #entries + 1, #rows do rows[index]:Hide() end
@@ -944,7 +1022,9 @@ local function recipeDetails(id)
     if recipe == "" then recipe = nil end
     local schematic = trade and trade.GetRecipeSchematic and trade.GetRecipeSchematic(id, false)
     local outputID = schematic and schematic.outputItemID
-    local known = addon and addon.recipeOutputs and addon.recipeOutputs[id]
+    local catalog = addon.recipeCatalog[id] or (ForeverGuildDiscoveredRecipes and ForeverGuildDiscoveredRecipes[id])
+    local known = addon.recipeOutputs and addon.recipeOutputs[id]
+    if not known and catalog then known = catalog.output end
     if not outputID or outputID < 1 then
         outputID = type(known) == "table" and known[1] or (type(known) == "number" and known or nil)
     end
@@ -992,6 +1072,7 @@ local enchantSlots = {
 }
 
 local itemDetails, pendingItems = {}, {}
+local recipeLoad = { ids = {}, total = 0, remaining = 0, failed = 0 }
 
 local function recipeItemDetails(itemID)
     if not itemID then return end
@@ -999,16 +1080,86 @@ local function recipeItemDetails(itemID)
     if not details and not pendingItems[itemID] then
         local getItemInfo = C_Item and C_Item.GetItemInfo or GetItemInfo
         if getItemInfo then
-            local _, _, quality, _, requiredLevel = getItemInfo(itemID)
+            local name, _, quality, _, requiredLevel = getItemInfo(itemID)
             if quality ~= nil then
-                details = { quality = quality, level = requiredLevel }
+                details = { name = name, quality = quality, level = requiredLevel }
                 itemDetails[itemID] = details
             else
                 pendingItems[itemID] = true
+                if C_Item and C_Item.RequestLoadItemDataByID then pcall(C_Item.RequestLoadItemDataByID, itemID) end
             end
         end
     end
     if details then return ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[details.quality], details.level, details.quality end
+end
+
+local function preloadRecipeItems()
+    local items, seen = {}, {}
+    local function add(id)
+        if type(id) == "number" and id > 0 and not seen[id] and not itemDetails[id] then
+            seen[id] = true
+            items[#items + 1] = id
+        end
+    end
+    local function addRecipe(recipe)
+        local record = addon.recipeCatalog[recipe]
+        if record then
+            add(record.output)
+            for id in pairs(record.reagents or {}) do add(id) end
+        end
+        local output = addon.recipeOutputs[recipe]
+        add(type(output) == "table" and output[1] or output)
+    end
+    -- Warm the visible order data before the rest of the catalog.
+    for _, order in pairs(addon.board.records(guildKey)) do addRecipe(order.recipe) end
+    for _, order in pairs(ForeverGuildOrders or {}) do
+        if orderBook.belongsToGuild(order, guildKey) then addRecipe(order.recipe) end
+    end
+    for recipe, record in pairs(addon.recipeCatalog) do
+        addRecipe(recipe)
+        if not record.name and C_Spell and C_Spell.RequestLoadSpellData then
+            pcall(C_Spell.RequestLoadSpellData, recipe)
+        end
+    end
+    for _, record in pairs(ForeverGuildDiscoveredRecipes) do add(record.output) end
+
+    recipeLoad.ids, recipeLoad.total, recipeLoad.remaining = seen, #items, #items
+    recipeLoad.failed = 0
+    local function finish(id, loaded)
+        local state = recipeLoad.ids[id]
+        if state == "missing" then
+            if loaded then
+                recipeLoad.failed = recipeLoad.failed - 1
+                recipeLoad.ids[id] = nil
+            end
+        elseif state then
+            recipeLoad.remaining = recipeLoad.remaining - 1
+            recipeLoad.ids[id] = not loaded and "missing" or nil
+            if not loaded then recipeLoad.failed = recipeLoad.failed + 1 end
+        end
+    end
+    recipeLoad.finish = finish
+
+    local index = 1
+    local function batch()
+        for i = index, math.min(index + 39, #items) do
+            local id = items[i]
+            recipeItemDetails(id)
+            if itemDetails[id] then finish(id, true) end
+        end
+        local catalog = window and window.boardCatalog
+        if catalog and catalog:IsShown() then catalog.updateProgress() end
+        index = index + 40
+        if index <= #items then after(.10, batch) end
+    end
+    batch()
+    if #items > 0 then
+        after(25, function()
+            for id in pairs(recipeLoad.ids) do finish(id, itemDetails[id] ~= nil) end
+            local catalog = window and window.boardCatalog
+            if catalog and catalog:IsShown() then catalog.updateProgress() end
+        end)
+    end
 end
 
 local function recipePresentation(id, title, professionID)
@@ -1242,6 +1393,11 @@ refresh = function()
     local ordersOpen = activeTab == "orders"
     local helpOpen = activeTab == "help"
     local bankOpen = activeTab == "bank"
+    local boardOpen = activeTab == "board"
+    if window.board then
+        window.board:SetShown(boardOpen)
+        selectSideTab(window.boardTab, boardOpen)
+    end
     if window.bank then
         window.bank:SetShown(bankOpen)
         selectSideTab(window.bankTab, bankOpen)
@@ -1250,7 +1406,7 @@ refresh = function()
         window.help:SetShown(helpOpen)
         selectSideTab(window.helpTab, helpOpen)
     end
-    if orderMenu and (ordersOpen or adminOpen or logOpen or rosterOpen or helpOpen or bankOpen) then orderMenu:Hide() end
+    if orderMenu and (ordersOpen or adminOpen or logOpen or rosterOpen or helpOpen or bankOpen or boardOpen) then orderMenu:Hide() end
     if window.orders then
         window.orders:SetShown(ordersOpen)
         selectSideTab(window.ordersTab, ordersOpen)
@@ -1259,13 +1415,14 @@ refresh = function()
         window.admin:SetShown(adminOpen)
         selectSideTab(window.adminTab, adminOpen)
     end
-    window.professions:SetShown(not logOpen and not rosterOpen and not adminOpen and not ordersOpen and not helpOpen and not bankOpen)
+    window.professions:SetShown(not logOpen and not rosterOpen and not adminOpen and not ordersOpen and not helpOpen and not bankOpen and not boardOpen)
     window.rosterView:SetShown(rosterOpen)
     selectSideTab(window.rosterTab, rosterOpen)
     window.log:SetShown(logOpen)
-    selectSideTab(window.professionTab, not logOpen and not rosterOpen and not adminOpen and not ordersOpen and not helpOpen and not bankOpen)
+    selectSideTab(window.professionTab, not logOpen and not rosterOpen and not adminOpen and not ordersOpen and not helpOpen and not bankOpen and not boardOpen)
     selectSideTab(window.logTab, logOpen)
     if helpOpen then return end
+    if boardOpen then window.refreshBoard(); return end
     if bankOpen then window.refreshBank(); return end
     if ordersOpen then window.refreshOrders(); return end
     if adminOpen then window.refreshAdmin(); return end
@@ -1447,6 +1604,7 @@ local addonIcon = "Interface\\AddOns\\ForeverGuild\\Art\\ForeverGuildEmblem"
 local exportFrame
 
 local function showDiagnostics()
+    if uiInCombat() then return end
     if not exportFrame then
         exportFrame = CreateFrame("Frame", "ForeverGuildDiagnosticsWindow", UIParent, "PortraitFrameTemplate")
         exportFrame:SetSize(740, 460)
@@ -1910,6 +2068,7 @@ local function prepareProfessionButtons(dialog)
 end
 
 local function showSetup()
+    if uiInCombat() then return end
     if not player then return end
     local class = roster[player] and roster[player].class
     if not class and UnitClass then
@@ -2011,6 +2170,7 @@ local function maybeShowSetup()
 end
 
 local function showSettings()
+    if uiInCombat() then return end
     if settingsWindow then
         settingsWindow:SetShown(not settingsWindow:IsShown())
         return
@@ -2364,7 +2524,9 @@ local function materialRows(recipe, quantity)
     local rows = {}
     for _, slot in ipairs(materials) do
         for index, id in ipairs(slot.items) do
-            local name = getName and getName(id) or (GetItemInfo and GetItemInfo(id)) or ("Item #" .. id)
+            recipeItemDetails(id)
+            local cached = itemDetails[id]
+            local name = (cached and cached.name) or (getName and getName(id)) or ("Item #" .. id)
             local alternative = index > 1 and (de and "   oder " or "   or ") or ""
             rows[#rows + 1] = { itemID = id, text = ("%s%d × %s"):format(alternative, slot.count * quantity, name) }
         end
@@ -2428,6 +2590,12 @@ local function pollOrders()
             orderBook.deliverRelays(guildKey, roster, sendOrderMessage, orderClock())
         end
     end
+    if orderChannel and database and guildKey == guildIdentity() then
+        addon.board.tick(guildKey, player, orderClock(),
+            function(key) return roster[key] and roster[key].online end, broadcastOrder, sendOrderMessage)
+        addon.boardNotes.tick(guildKey, player, orderClock(), officer(roster[player]), broadcastOrder)
+        if activeTab == "board" then queueRefresh() end
+    end
     after(15 + math.random(0, 8), pollOrders)
 end
 
@@ -2462,6 +2630,17 @@ local function receiveOrderMessage(sender, message)
         key = roleMemberKey(sender)
     end
     if not roster[key] then return end
+    local boardPacket = payload or message
+    if boardPacket:sub(1, 2) == "M:" then
+        if not destination and addon.boardNotes.receive(guildKey, key, boardPacket, officer(roster[key]), orderClock())
+            and activeTab == "board" then queueRefresh() end
+        return
+    end
+    if boardPacket:sub(1, 2) == "B:" then
+        if addon.board.receive(guildKey, player, key, boardPacket, destination ~= nil, broadcastOrder)
+            and activeTab == "board" then queueRefresh() end
+        return
+    end
     local now = orderClock()
 
     if not destination then
@@ -2542,9 +2721,12 @@ local function receiveOrderMessage(sender, message)
     end
 end
 
-showOrderDialog = function(recipe, owner, professionID)
+showOrderDialog = function(recipe, owner, professionID, boardOnly)
+    if uiInCombat() then return end
     local crafters = {}
-    if owner and owner ~= player then
+    if boardOnly then
+        -- Open orders do not need a preselected crafter.
+    elseif owner and owner ~= player then
         crafters[1] = owner
     else
         for name, profile in pairs(database or {}) do
@@ -2558,7 +2740,7 @@ showOrderDialog = function(recipe, owner, professionID)
     if not orderDialog then
         local dialog = CreateFrame("Frame", "ForeverGuildOrderWindow", UIParent, "PortraitFrameTemplate")
         orderDialog = dialog
-        dialog:SetSize(560, 407)
+        dialog:SetSize(560, 488)
         dialog:SetPoint("CENTER")
         dialog:SetFrameStrata("FULLSCREEN_DIALOG")
         dialog:SetClampedToScreen(true)
@@ -2575,7 +2757,7 @@ showOrderDialog = function(recipe, owner, professionID)
         hero:SetPoint("TOPRIGHT", -10, -10)
         hero:SetHeight(66)
         hero:EnableMouse(true)
-        hero:SetScript("OnEnter", orderItemTooltip)
+        hero:SetScript("OnEnter", recipeTooltip)
         hero:SetScript("OnLeave", function() GameTooltip:Hide() end)
         dialog.hero = hero
         dialog.itemIcon = hero:CreateTexture(nil, "ARTWORK")
@@ -2605,17 +2787,24 @@ showOrderDialog = function(recipe, owner, professionID)
         dialog.quantity = quantity
         local function update()
             local count = tonumber(quantity:GetText())
+            local days = tonumber(dialog.boardDays:GetText())
             local target = dialog.crafters[dialog.crafterIndex]
             local member = target and roster[target]
-            dialog.targetName:SetText(member and member.displayName or target or (de and "Kein Handwerker gefunden" or "No crafter found"))
+            dialog.targetName:SetText(dialog.boardOnly and (de and "Offen für die Gilde" or "Open to the guild")
+                or (member and member.displayName or target or (de and "Kein Handwerker gefunden" or "No crafter found")))
             local canSwitch = #dialog.crafters > 1
             dialog.target:SetEnabled(canSwitch)
             dialog.targetArrow:SetShown(canSwitch)
             dialog.renderMaterials(materialRows(dialog.recipe, count and count >= 1 and count <= 200 and count or 1))
             dialog.prepare:SetEnabled(database ~= nil and target ~= nil and count ~= nil and count >= 1 and count <= 200)
+            dialog.prepare:SetShown(not dialog.boardOnly)
+            dialog.post:SetEnabled(database ~= nil and orderChannel and count ~= nil and count >= 1 and count <= 200
+                and days ~= nil and days >= 1 and days <= 30 and days % 1 == 0)
             dialog.delivery = nil
-            dialog.status:SetText(de and "Ist der Handwerker offline, bleibt der Auftrag in der Warteschlange."
-                or "If the crafter is offline, the order stays queued.")
+            dialog.status:SetText(dialog.boardOnly
+                and (de and "Die Laufzeit gilt, solange der Auftrag offen ist." or "The deadline applies while the order is open.")
+                or (de and "Ist der Handwerker offline, bleibt der Auftrag in der Warteschlange."
+                    or "If the crafter is offline, the order stays queued."))
         end
         local crafter = panel(fields, .5, nil, .95)
         crafter:SetPoint("TOPLEFT", 12, -27)
@@ -2642,9 +2831,13 @@ showOrderDialog = function(recipe, owner, professionID)
         local materials = contrastPanel(body)
         materials:SetPoint("TOPLEFT", fields, "BOTTOMLEFT", 0, -8)
         materials:SetPoint("TOPRIGHT", fields, "BOTTOMRIGHT", 0, -8)
-        materials:SetPoint("BOTTOM", 0, 73)
+        materials:SetPoint("BOTTOM", 0, 153)
         heading(materials, de and "Benötigte Zutaten" or "Required materials", 12, -10)
         dialog.renderMaterials = list(materials, 9, -28, -30, 9, 477, 20, orderItemTooltip)
+        dialog.refreshMaterials = function()
+            local count = tonumber(quantity:GetText())
+            dialog.renderMaterials(materialRows(dialog.recipe, count and count >= 1 and count <= 200 and count or 1))
+        end
         local footer = contrastPanel(body)
         footer:SetPoint("TOPLEFT", materials, "BOTTOMLEFT", 0, -8)
         footer:SetPoint("BOTTOMRIGHT", -10, 10)
@@ -2673,27 +2866,68 @@ showOrderDialog = function(recipe, owner, professionID)
         end)
         dialog.prepare:ClearAllPoints()
         dialog.prepare:SetPoint("BOTTOMRIGHT", -10, 8)
+        local supplies = CreateFrame("CheckButton", nil, footer, "UICheckButtonTemplate")
+        supplies:SetPoint("TOPLEFT", 9, -29)
+        heading(footer, de and "Ich stelle die Materialien" or "I provide the materials", 39, -37)
+        local note = CreateFrame("EditBox", nil, footer, "InputBoxTemplate")
+        note:SetSize(217, 23)
+        note:SetPoint("TOPRIGHT", -12, -32)
+        note:SetMaxBytes(68)
+        note:SetAutoFocus(false)
+        note:SetScript("OnEscapePressed", note.ClearFocus)
+        local placeholder = heading(note, de and "Optionale Notiz fürs Brett" or "Optional board note", 1, -5)
+        note:SetScript("OnTextChanged", function(box) placeholder:SetShown(box:GetText() == "") end)
+        heading(footer, de and "Laufzeit in Tagen (1–30)" or "Duration in days (1–30)", 13, -70)
+        local days = CreateFrame("EditBox", nil, footer, "InputBoxTemplate")
+        days:SetSize(55, 23)
+        days:SetPoint("TOPLEFT", 176, -65)
+        days:SetNumeric(true)
+        days:SetMaxLetters(2)
+        days:SetAutoFocus(false)
+        days:SetScript("OnEscapePressed", days.ClearFocus)
+        days:SetScript("OnTextChanged", function()
+            if dialog.recipe then update() end
+        end)
+        dialog.boardDays = days
+        dialog.boardSupplies, dialog.boardNote = supplies, note
+        dialog.post = button(footer, de and "Ans Schwarze Brett hängen" or "Post to bulletin board", 205, 12, 0, function()
+            if not database or guildKey ~= guildIdentity() or not orderChannel then return end
+            local order = addon.board.post(guildKey, player, dialog.recipe, tonumber(quantity:GetText()),
+                not not supplies:GetChecked(), note:GetText(), broadcastOrder, tonumber(days:GetText()))
+            if not order then return end
+            note:ClearFocus()
+            dialog:Hide()
+            activeTab = "board"
+            refresh()
+        end)
+        dialog.post:ClearAllPoints()
+        dialog.post:SetPoint("BOTTOMLEFT", 9, 8)
         dialog.update = update
         quantity:SetScript("OnTextChanged", function() if dialog.recipe then update() end end)
     end
     orderDialog.recipe, orderDialog.crafters, orderDialog.crafterIndex = recipe, crafters, 1
     orderDialog.professionID = professionID
+    orderDialog.boardOnly = boardOnly
     local name = recipeName(recipe)
-    local _, icon, color, _, _, quality, itemID = recipePresentation(recipe, name, professionID)
+    local _, icon, color, _, _, quality = recipePresentation(recipe, name, professionID)
     orderDialog.name:SetText(name)
     color = color or gold
     orderDialog.name:SetTextColor(color.r, color.g, color.b)
     orderDialog.itemIcon:SetTexture(icon)
-    orderDialog.hero.entry = { itemID = itemID }
+    orderDialog.hero.entry = { recipe = recipe }
     local rarity = quality and _G["ITEM_QUALITY" .. quality .. "_DESC"]
     orderDialog.subtitle:SetText(professionName(professionID) .. (rarity and ("  ·  " .. rarity) or ""))
     orderDialog.status:SetText("")
+    orderDialog.boardSupplies:SetChecked(true)
+    orderDialog.boardNote:SetText("")
+    orderDialog.boardDays:SetText("7")
     orderDialog.quantity:SetText("1")
     orderDialog.update()
     orderDialog:Show()
 end
 
 showOrderMenu = function(row)
+    if uiInCombat() then return end
     if not orderBook then return end
     if not orderMenu then
         orderMenu = panel(UIParent)
@@ -2716,7 +2950,8 @@ end
 
 local function describeOrderRecipe(order)
     local id = order.recipe
-    local profession = order.professionID or (addon.recipeProfessions and addon.recipeProfessions[id])
+    local catalog = addon.recipeCatalog[id] or ForeverGuildDiscoveredRecipes[id]
+    local profession = order.professionID or (catalog and catalog.profession) or addon.recipeProfessions[id]
     if not profession and trade and trade.GetProfessionInfoByRecipeID then
         local ok, info = pcall(trade.GetProfessionInfoByRecipeID, id)
         if ok and info and info.professionID and info.professionID > 0 then profession = info.professionID end
@@ -2918,6 +3153,1033 @@ local function buildOrders()
         refresh()
     end
     showCompleted:SetScript("OnClick", window.refreshOrders)
+end
+
+local function openBoardCatalog()
+    if uiInCombat() then return end
+    local dialog = window.boardCatalog
+    if not dialog then
+        dialog = CreateFrame("Frame", "ForeverGuildBoardCatalog", UIParent, "PortraitFrameTemplate")
+        window.boardCatalog = dialog
+        table.insert(UISpecialFrames, "ForeverGuildBoardCatalog")
+        local availableWidth, availableHeight = UIParent:GetSize()
+        local width = math.min(1050, availableWidth - 44)
+        local height = math.min(680, availableHeight - 44)
+        dialog:SetSize(width, height)
+        dialog:SetPoint("CENTER")
+        dialog:SetFrameStrata("FULLSCREEN_DIALOG")
+        dialog:SetClampedToScreen(true)
+        dialog:SetTitle(de and "Schwarzes Brett · Rezept auswählen" or "Bulletin board · Choose recipe")
+        dialog:SetPortraitToAsset(addonIcon)
+        local body = panel(dialog)
+        body:SetPoint("TOPLEFT", 12, -45)
+        body:SetPoint("BOTTOMRIGHT", -12, 13)
+        pageBackdrop(body, "GuildProfessions", 1.5, .88)
+        local categories = contrastPanel(body)
+        categories:SetPoint("TOPLEFT", 8, -8)
+        categories:SetPoint("BOTTOMLEFT", 8, 8)
+        categories:SetWidth(176)
+        local types = contrastPanel(body)
+        types:SetPoint("TOPLEFT", categories, "TOPRIGHT", 8, 0)
+        types:SetPoint("BOTTOMLEFT", categories, "BOTTOMRIGHT", 8, 0)
+        types:SetWidth(172)
+        local results = contrastPanel(body)
+        results:SetPoint("TOPLEFT", types, "TOPRIGHT", 8, 0)
+        results:SetPoint("BOTTOMRIGHT", -8, 8)
+
+        heading(categories, de and "Berufe" or "Professions", 12, -12)
+        heading(types, de and "Kategorien" or "Categories", 12, -12)
+        heading(results, de and "Rezeptname, Itemname oder Rezept-ID" or "Recipe name, item name or recipe ID", 12, -12)
+        local input = CreateFrame("EditBox", nil, results, "InputBoxTemplate")
+        input:SetPoint("TOPLEFT", 17, -32)
+        input:SetPoint("TOPRIGHT", -14, -32)
+        input:SetHeight(24)
+        input:SetMaxBytes(100)
+        input:SetAutoFocus(false)
+        input:SetScript("OnEscapePressed", input.ClearFocus)
+        local renderCategories = list(categories, 8, -34, -26, 8, 140, 24)
+        local renderTypes = list(types, 8, -34, -26, 8, 135, 24)
+        local renderResults, resultsScroll = list(results, 8, -89, -28, 44, math.max(120, width - 440), 24, recipeTooltip)
+        local progress = CreateFrame("StatusBar", nil, results)
+        progress:SetPoint("TOPLEFT", 12, -62)
+        progress:SetPoint("TOPRIGHT", -12, -62)
+        progress:SetHeight(18)
+        progress:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+        progress:SetStatusBarColor(.26, .50, .27)
+        local progressBackground = progress:CreateTexture(nil, "BACKGROUND")
+        progressBackground:SetAllPoints()
+        progressBackground:SetColorTexture(.1, .08, .06, 1)
+        local progressText = progress:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        progressText:SetPoint("CENTER")
+        dialog.updateProgress = function()
+            progress:SetShown(recipeLoad.remaining > 0 or recipeLoad.failed > 0)
+            progress:SetMinMaxValues(0, math.max(1, recipeLoad.total))
+            local ready = recipeLoad.total - recipeLoad.remaining - recipeLoad.failed
+            progress:SetValue(ready)
+            progressText:SetText(recipeLoad.remaining > 0
+                and (de and "Itemdaten laden · %d / %d" or "Loading item data · %d / %d"):format(ready, recipeLoad.total)
+                or (de and "%d Itemdaten noch nicht verfügbar" or "%d item records still unavailable"):format(recipeLoad.failed))
+        end
+        local status = heading(results, "", 97, 0)
+        status:ClearAllPoints()
+        status:SetPoint("BOTTOMLEFT", 97, 15)
+        status:SetPoint("RIGHT", -97, 0)
+        status:SetJustifyH("CENTER")
+        local profession, category, page, matching = nil, nil, 1, {}
+        local function turnPage(offset)
+            page = page + offset
+            resultsScroll:SetVerticalScroll(0)
+            dialog.renderResults()
+        end
+        local prev = button(results, de and "Zurück" or "Previous", 80, 0, 0, function() turnPage(-1) end)
+        local nextPage = button(results, de and "Weiter" or "Next", 80, 0, 0, function() turnPage(1) end)
+        prev:ClearAllPoints()
+        nextPage:ClearAllPoints()
+        prev:SetPoint("BOTTOMLEFT", 10, 10)
+        nextPage:SetPoint("BOTTOMRIGHT", -10, 10)
+
+        local catalog, professions
+        local typeCache = {}
+        local armor = {
+            [0] = de and "Schmuck & Zubehör" or "Jewelry & accessories",
+            [1] = de and "Stoff" or "Cloth",
+            [2] = de and "Leder" or "Leather",
+            [3] = de and "Kette" or "Mail",
+            [4] = de and "Platte" or "Plate",
+            [6] = de and "Schilde" or "Shields",
+        }
+        local function outputFor(id)
+            local record = addon.recipeCatalog[id] or ForeverGuildDiscoveredRecipes[id]
+            local output = (record and record.output) or addon.recipeOutputs[id]
+            if type(output) == "table" then return output[1] end
+            return output
+        end
+        local function recipeType(id, skill)
+            local output = outputFor(id)
+            if output and typeCache[output] then return typeCache[output] end
+            if output and C_Item and C_Item.GetItemInfoInstant then
+                local _, itemClass, itemSubclass, _, _, classID, subclassID = C_Item.GetItemInfoInstant(output)
+                local label = (classID == 4 and armor[subclassID])
+                    or (classID == 2 and (de and "Waffen" or "Weapons"))
+                if not label and classID and classID < 16 then label = itemClass end
+                if not label or label == "" then label = itemSubclass end
+                if label and label ~= "" then
+                    typeCache[output] = label
+                    return label
+                end
+            end
+            if not output and skill == 333 then return de and "Verzauberungen" or "Enchantments" end
+            return de and "Sonstige Rezepte" or "Other recipes"
+        end
+        local function rebuildCatalog()
+            catalog, professions = {}, {}
+            local function add(id, skill)
+                if not catalog[id] and skill then
+                    catalog[id] = skill
+                    professions[skill] = true
+                end
+            end
+            for id, record in pairs(addon.recipeCatalog) do add(id, record.profession) end
+            for id, record in pairs(ForeverGuildDiscoveredRecipes) do add(id, record.profession) end
+            local function merge(profile)
+                for skill, data in pairs(profile or {}) do
+                    for id in pairs(data.recipes or {}) do add(id, skill) end
+                end
+            end
+            merge(ForeverGuildCharacter)
+            for member, profile in pairs(database or {}) do
+                if roster[member] then merge(profile.professions) end
+            end
+        end
+
+        dialog.renderResults = function()
+            local pageSize = 60
+            local totalPages = math.max(1, math.ceil(#matching / pageSize))
+            page = math.max(1, math.min(page, totalPages))
+            local rows = {}
+            for index = (page - 1) * pageSize + 1, math.min(page * pageSize, #matching) do
+                local entry = matching[index]
+                local icon = C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(entry.id)
+                if icon == 134400 then icon = nil end
+                local color = recipeItemDetails(outputFor(entry.id))
+                rows[#rows + 1] = { text = entry.name .. "  ·  " .. entry.category,
+                    icon = icon or professionIcons[entry.skill], recipe = entry.id, color = color,
+                    action = function()
+                        input:ClearFocus()
+                        dialog:Hide()
+                        showOrderDialog(entry.id, nil, entry.skill, true)
+                    end }
+            end
+            if #rows == 0 then rows[1] = { text = de and "Keine passenden Rezepte." or "No matching recipes.", color = muted } end
+            renderResults(rows)
+            prev:SetEnabled(page > 1)
+            nextPage:SetEnabled(page < totalPages)
+            status:SetText((de and "%d Treffer · %d / %d" or "%d matches · %d / %d"):format(#matching, page, totalPages))
+        end
+
+        local function filter(preservePosition)
+            matching = {}
+            if not preservePosition then page = 1 end
+            local query = utf8Lower(input:GetText():match("^%s*(.-)%s*$"))
+            local idQuery = tonumber(query:match("^#?(%d+)$"))
+            if idQuery and idQuery >= 1 and idQuery <= 2147483647 and not catalog[idQuery]
+                and trade and trade.GetProfessionInfoByRecipeID then
+                local ok, info = pcall(trade.GetProfessionInfoByRecipeID, idQuery)
+                local skill = ok and info and info.professionID
+                if skill and skill > 0 then
+                    catalog[idQuery], professions[skill] = skill, true
+                end
+            end
+            local availableTypes = {}
+            for id, skill in pairs(catalog) do
+                if not profession or skill == profession then
+                    local label = recipeType(id, skill)
+                    availableTypes[label] = true
+                    local name = recipeName(id)
+                    if name ~= "#" .. id or idQuery == id or query == "" then
+                        local lower = utf8Lower(name)
+                        local output = outputFor(id)
+                        local cached = output and itemDetails[output]
+                        local itemName = cached and cached.name
+                        if (not category or label == category)
+                            and (query == "" or idQuery == id or lower:find(query, 1, true)
+                                or (itemName and utf8Lower(itemName):find(query, 1, true))) then
+                            matching[#matching + 1] = { id = id, skill = skill, name = name,
+                                sortName = lower, category = label }
+                        end
+                    end
+                end
+            end
+            table.sort(matching, function(a, b)
+                if a.sortName == b.sortName then return a.id < b.id end
+                return a.sortName < b.sortName
+            end)
+            local labels = {}
+            for label in pairs(availableTypes) do labels[#labels + 1] = label end
+            table.sort(labels, function(a, b) return utf8Lower(a) < utf8Lower(b) end)
+            local typeRows = { { text = de and "Alle Kategorien" or "All categories", selected = not category,
+                action = function() category = nil; filter() end } }
+            for _, label in ipairs(labels) do
+                typeRows[#typeRows + 1] = { text = label, selected = category == label,
+                    action = function() category = label; filter() end }
+            end
+            renderTypes(typeRows)
+            if not preservePosition then resultsScroll:SetVerticalScroll(0) end
+            dialog.renderResults()
+        end
+
+        local function showCategories()
+            local skills = {}
+            for skill in pairs(professions) do skills[#skills + 1] = { id = skill, name = professionName(skill) } end
+            table.sort(skills, function(a, b) return utf8Lower(a.name) < utf8Lower(b.name) end)
+            local rows = { { text = de and "Alle Berufe" or "All professions", selected = not profession,
+                action = function() profession, category = nil, nil; dialog.refresh() end } }
+            for _, skill in ipairs(skills) do
+                rows[#rows + 1] = { text = skill.name, selected = profession == skill.id,
+                    icon = professionIcons[skill.id], action = function() profession, category = skill.id, nil; dialog.refresh() end }
+            end
+            renderCategories(rows)
+        end
+        dialog.refresh = function()
+            showCategories()
+            filter()
+        end
+        dialog.prepare = function()
+            dialog.updateProgress()
+            rebuildCatalog()
+            profession, category = nil, nil
+            input:SetText("")
+            dialog.refresh()
+        end
+        local itemRefreshQueued
+        dialog.queueItemRefresh = function()
+            if itemRefreshQueued then return end
+            itemRefreshQueued = true
+            after(.6, function()
+                itemRefreshQueued = false
+                if dialog:IsShown() then filter(true) end
+            end)
+        end
+        local filterQueued
+        input:SetScript("OnTextChanged", function()
+            if filterQueued then return end
+            filterQueued = true
+            after(.15, function()
+                filterQueued = false
+                if dialog:IsShown() then filter() end
+            end)
+        end)
+    end
+    dialog.prepare()
+    dialog:Show()
+end
+
+local function openGroupComposer(onPosted)
+    if uiInCombat() then return end
+    local dialog = window.groupComposer
+    if not dialog then
+        dialog = CreateFrame("Frame", "ForeverGuildGroupComposer", UIParent, "PortraitFrameTemplate")
+        window.groupComposer = dialog
+        table.insert(UISpecialFrames, "ForeverGuildGroupComposer")
+        dialog:SetSize(620, 530)
+        dialog:SetPoint("CENTER")
+        dialog:SetFrameStrata("FULLSCREEN_DIALOG")
+        dialog:SetClampedToScreen(true)
+        dialog:SetPortraitToAsset(addonIcon)
+        dialog:SetTitle(de and "ForeverGuild · Dungeon-Finder" or "ForeverGuild · Dungeon Finder")
+        local body = panel(dialog)
+        body:SetPoint("TOPLEFT", 12, -44)
+        body:SetPoint("BOTTOMRIGHT", -12, 13)
+        pageBackdrop(body, "GuildHall", 1.5, .65)
+
+        local roleBar = contrastPanel(body)
+        roleBar:SetPoint("TOPLEFT", 11, -10)
+        roleBar:SetPoint("TOPRIGHT", -11, -10)
+        roleBar:SetHeight(91)
+        heading(roleBar, de and "Meine Rolle" or "My role", 12, -12)
+        local controls, ownRole = {}, 3
+        local roleKeys = { "T", "H", "D" }
+        for i, role in ipairs(roles) do
+            local control = roleControl(roleBar, role, 130 + (i - 1) * 132, -7)
+            controls[i] = control
+            control:SetScript("OnClick", function()
+                ownRole = i
+                for index, other in ipairs(controls) do other:Select(index == i) end
+            end)
+            local caption = heading(roleBar, role.label, 0, 0)
+            caption:ClearAllPoints()
+            caption:SetPoint("TOP", control, "BOTTOM", 0, -3)
+        end
+
+        local content = contrastPanel(body)
+        content:SetPoint("TOPLEFT", roleBar, "BOTTOMLEFT", 0, -9)
+        content:SetPoint("TOPRIGHT", roleBar, "BOTTOMRIGHT", 0, -9)
+        content:SetPoint("BOTTOM", 0, 49)
+        local label = heading(content, "", 14, -12)
+        label:SetFontObject(GameFontNormalLarge)
+        local activityPane = CreateFrame("Frame", nil, content)
+        activityPane:SetAllPoints()
+        local form = CreateFrame("Frame", nil, content)
+        form:SetAllPoints()
+        local render, activityScroll = list(activityPane, 12, -45, -31, 12, 500, 57)
+
+        local function field(caption, y, bytes)
+            heading(form, caption, 14, y)
+            local input = CreateFrame("EditBox", nil, form, "InputBoxTemplate")
+            input:SetPoint("TOPLEFT", 20, y - 19)
+            input:SetPoint("TOPRIGHT", -17, y - 19)
+            input:SetHeight(26)
+            input:SetMaxBytes(bytes)
+            input:SetAutoFocus(false)
+            input:SetScript("OnEscapePressed", input.ClearFocus)
+            return input
+        end
+        local subject = field(de and "Titel" or "Title", -47, 52)
+        local schedule = field(de and "Termin · TT.MM.JJJJ HH:MM (deine Ortszeit)"
+            or "Start · DD.MM.YYYY HH:MM (your local time)", -98, 24)
+        local description = field(de and "Details (optional)" or "Details (optional)", -149, 112)
+        heading(form, de and "Rollenplätze (inklusive dir)" or "Role slots (including you)", 14, -200)
+        local slotInputs = {}
+        for i, role in ipairs(roles) do
+            local x = 15 + (i - 1) * 145
+            heading(form, role.label, x, -229)
+            local input = CreateFrame("EditBox", nil, form, "InputBoxTemplate")
+            input:SetSize(40, 24)
+            input:SetPoint("TOPLEFT", x + 65, -224)
+            input:SetAutoFocus(false)
+            input:SetNumeric(true)
+            input:SetMaxLetters(2)
+            input:SetScript("OnEscapePressed", input.ClearFocus)
+            slotInputs[roleKeys[i]] = input
+        end
+        local errorText = orderText(form, 15, -263, 15)
+        errorText:SetTextColor(1, .65, .38)
+        local choosing, activityID = true, nil
+        local function eventTime()
+            local d, m, y, h, minute = schedule:GetText():match("^(%d%d)%.(%d%d)%.(%d%d%d%d)%s+(%d%d):(%d%d)$")
+            if not d then return end
+            local ok, timestamp = pcall(time, {day = tonumber(d), month = tonumber(m), year = tonumber(y),
+                hour = tonumber(h), min = tonumber(minute), sec = 0})
+            if ok and timestamp and date("%d.%m.%Y %H:%M", timestamp) == d .. "." .. m .. "." .. y .. " " .. h .. ":" .. minute then
+                return timestamp
+            end
+        end
+
+        local publish = button(body, de and "Termin veröffentlichen" or "Publish event", 182, 0, 0, function()
+            if uiInCombat() or not orderChannel or not database or guildKey ~= guildIdentity() then return end
+            local slots, total = {}, 0
+            for role, input in pairs(slotInputs) do
+                local count = tonumber(input:GetText())
+                if not count or count < 0 or count > 40 or count % 1 ~= 0 then
+                    errorText:SetText(de and "Bitte für jede Rolle eine Platzanzahl eingeben." or "Enter a slot count for each role.")
+                    return
+                end
+                slots[role], total = count, total + count
+            end
+            local role = roleKeys[ownRole]
+            if total > 40 or slots[role] == 0 then
+                errorText:SetText(de and "Maximal 40 Plätze. Für deine eigene Rolle muss ein Platz vorgesehen sein."
+                    or "Use at most 40 slots and reserve a slot for your own role.")
+                return
+            end
+            if addon.boardNotes.post(guildKey, player, "G", subject:GetText(), description:GetText(), eventTime(),
+                false, orderClock(), broadcastOrder, slots, role, activityID) then
+                dialog:Hide()
+                dialog.onPosted()
+            else
+                errorText:SetText(de and "Titel ohne Doppelpunkt und einen gültigen Termin in den nächsten 30 Tagen eingeben."
+                    or "Enter a title without a colon and a valid start within the next 30 days.")
+            end
+        end)
+        publish:ClearAllPoints()
+        publish:SetPoint("BOTTOMRIGHT", -12, 11)
+
+        local function showPicker(picking)
+            choosing = picking
+            activityPane:SetShown(picking)
+            form:SetShown(not picking)
+            publish:SetShown(not picking)
+            label:SetText(picking and (de and "Dungeon auswählen" or "Choose dungeon") or "")
+            errorText:SetText("")
+        end
+        local back = button(body, de and "Zurück" or "Back", 117, 0, 0, function()
+            if choosing then dialog:Hide() else showPicker(true) end
+        end)
+        back:ClearAllPoints()
+        back:SetPoint("BOTTOMLEFT", 12, 11)
+
+        local rows = {}
+        for _, dungeon in ipairs(addon.groupDungeons) do
+            local name = dungeon[de and 1 or 2]
+            local details = dungeon[de and 3 or 4] .. " · " .. (de and "Stufe " or "Level ") .. dungeon[5]
+            local id = dungeon[6]
+            rows[#rows + 1] = { text = name, subtitle = details, boardCard = true,
+                banner = ("Interface\\AddOns\\ForeverGuild\\Art\\Dungeon%02d"):format(id),
+                action = function()
+                    activityID = id
+                    subject:SetText(name)
+                    showPicker(false)
+                    label:SetText(details)
+                end }
+        end
+        render(rows)
+        dialog.reset = function()
+            ownRole = 3
+            for i, role in ipairs(roles) do
+                if hasRole(memberMask(player), role.bit) then ownRole = i; break end
+            end
+            for i, control in ipairs(controls) do control:Select(i == ownRole) end
+            slotInputs.T:SetText("1")
+            slotInputs.H:SetText("1")
+            slotInputs.D:SetText("3")
+            description:SetText("")
+            schedule:SetText(date("%d.%m.%Y", orderClock() + 86400) .. " 20:00")
+            activityID = nil
+            activityScroll:SetVerticalScroll(0)
+            showPicker(true)
+        end
+    end
+    dialog.onPosted = onPosted
+    dialog.reset()
+    dialog:Show()
+end
+
+local function buildBoardNotes(page)
+    local function dungeonFor(note)
+        if note.activity then return addon.getGroupDungeon(note.activity) end
+        local title = utf8Lower(note.title)
+        for _, dungeon in ipairs(addon.groupDungeons) do
+            if title == utf8Lower(dungeon[1]) or title == utf8Lower(dungeon[2]) then return dungeon end
+        end
+    end
+
+    local function groupBanner(note, dungeon)
+        if dungeon then return ("Dungeon%02d"):format(dungeon[6]) end
+        local title = utf8Lower(note.title)
+        local text = utf8Lower(note.text)
+        if title:find("schwarzfels", 1, true) or title:find("blackrock", 1, true)
+            or text:match("^schwarzfels%s") or text:match("^blackrock mountain%s") then
+            return "BlackrockHall"
+        end
+        return "DungeonHall"
+    end
+
+    local function titleFor(note, dungeon)
+        if dungeon and (note.title == dungeon[1] or note.title == dungeon[2]) then
+            return dungeon[de and 1 or 2]
+        end
+        return note.title
+    end
+
+    local function groupMemberTooltip(row)
+        local key = row.entry and row.entry.member
+        local member = key and roster[key]
+        if not member then return end
+        local color = RAID_CLASS_COLORS and RAID_CLASS_COLORS[member.class] or gold
+        GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+        GameTooltip:SetText(member.displayName, color.r, color.g, color.b)
+        GameTooltip:AddLine((de and "Stufe %s · %s" or "Level %s · %s"):format(
+            member.level or "–", member.className or "–"), 1, .91, .74)
+        local spec = specName(member.class, ownSpec(key))
+        GameTooltip:AddDoubleLine(de and "Skillung" or "Specialization",
+            spec or (de and "Nicht hinterlegt" or "Not set"))
+        GameTooltip:AddDoubleLine(de and "Gildenrang" or "Guild rank", member.rank or "–")
+        if member.zone and member.zone ~= "" and member.online then
+            GameTooltip:AddDoubleLine(de and "Zone" or "Zone", member.zone)
+        end
+        GameTooltip:AddDoubleLine("Status", member.online and "Online" or "Offline")
+        local note = readGuildNote(key, false)
+        if note and note ~= "" then
+            GameTooltip:AddLine((de and "Gildennotiz: " or "Guild note: ") .. note, .83, .77, .65, true)
+        end
+        GameTooltip:Show()
+    end
+
+    local pane = contrastPanel(page)
+    pane:SetPoint("TOPLEFT", 17, -75)
+    pane:SetPoint("BOTTOMRIGHT", -17, 17)
+    local left = contrastPanel(pane)
+    left:SetPoint("TOPLEFT", 8, -95)
+    left:SetPoint("BOTTOMLEFT", 8, 8)
+    left:SetWidth(335)
+    local render = list(left, 8, -8, -30, 8, 299, 53)
+    local detail = contrastPanel(pane)
+    detail:SetPoint("TOPLEFT", left, "TOPRIGHT", 8, 0)
+    detail:SetPoint("BOTTOMRIGHT", -8, 8)
+    heading(pane, de and "Gildennachricht des Tages" or "Guild message of the day", 15, -12)
+    local motd = orderText(pane, 15, -33, 15)
+
+    local banner = detail:CreateTexture(nil, "ARTWORK", nil, -3)
+    banner:SetPoint("TOPLEFT", 3, -3)
+    banner:SetPoint("TOPRIGHT", -3, -3)
+    banner:SetHeight(154)
+    detail:HookScript("OnSizeChanged", function(_, width)
+        addon.fitDungeonArtwork(banner, width - 6, 154)
+    end)
+    banner:SetAlpha(.83)
+    local shade = detail:CreateTexture(nil, "ARTWORK", nil, -2)
+    shade:SetAllPoints(banner)
+    shade:SetColorTexture(1, 1, 1, 1)
+    shade:SetGradient("HORIZONTAL", CreateColor(.045, .033, .025, .98), CreateColor(.045, .033, .025, .14))
+    local edge = detail:CreateTexture(nil, "ARTWORK", nil, -1)
+    edge:SetPoint("TOPLEFT", banner, "BOTTOMLEFT")
+    edge:SetPoint("TOPRIGHT", banner, "BOTTOMRIGHT")
+    edge:SetHeight(1)
+    edge:SetColorTexture(.49, .34, .18, .8)
+    local title = orderText(detail, 16, -18, 16)
+    title:SetFontObject(GameFontNormalLarge)
+    local information = orderText(detail, 14, -48, 14)
+    local body = orderText(detail, 14, -95, 14)
+    local signup = contrastPanel(detail)
+    signup:SetPoint("TOPLEFT", 12, -174)
+    signup:SetPoint("BOTTOMRIGHT", -12, 52)
+    heading(signup, de and "Zusagen" or "Sign-ups", 10, -10)
+    local renderSignups = list(signup, 8, -29, -28, 7, 360, 25, groupMemberTooltip)
+    local function memberRow(key, suffix)
+        local member = roster[key]
+        local color = member and RAID_CLASS_COLORS and RAID_CLASS_COLORS[member.class]
+        local label = (member and member.displayName or key) .. (suffix or "")
+        if member and member.level then label = label .. "   ·   " .. (de and "Stufe " or "Lv. ") .. member.level end
+        return { text = label, color = color, member = key, labelOffset = 12 }
+    end
+
+    local selection, mode, composing
+    local sheet = contrastPanel(detail)
+    sheet:SetAllPoints()
+    sheet:EnableMouse(true)
+    sheet:SetFrameLevel(signup:GetFrameLevel() + 3)
+    local function field(caption, y, bytes)
+        local label = heading(sheet, caption, 14, y)
+        local input = CreateFrame("EditBox", nil, sheet, "InputBoxTemplate")
+        input:SetPoint("TOPLEFT", 19, y - 20)
+        input:SetPoint("TOPRIGHT", -19, y - 20)
+        input:SetHeight(24)
+        input:SetMaxBytes(bytes)
+        input:SetAutoFocus(false)
+        input:SetScript("OnEscapePressed", input.ClearFocus)
+        return input, label
+    end
+    local subject = field(de and "Titel" or "Title", -47, 52)
+    local description = field(de and "Nachricht / Details" or "Message / details", -101, 140)
+    local composeTitle = heading(sheet, "", 14, -15)
+    composeTitle:SetFontObject(GameFontNormalLarge)
+    local errorText = orderText(sheet, 14, -217, 14)
+    errorText:SetTextColor(1, .66, .37)
+
+    local function open(kind)
+        if kind == "G" then
+            openGroupComposer(function() pane.refresh() end)
+            return
+        end
+        composing = kind
+        composeTitle:SetText(de and "Gildenmitteilung anheften" or "Pin announcement")
+        subject:SetText("")
+        description:SetText("")
+        errorText:SetText("")
+        pane.refresh()
+        if sheet:IsShown() then subject:SetFocus() end
+    end
+    local function pin()
+        if not orderChannel or not database or guildKey ~= guildIdentity() then return end
+        local now = orderClock()
+        if addon.boardNotes.post(guildKey, player, composing, subject:GetText(), description:GetText(),
+            nil, officer(roster[player]), now, broadcastOrder) then
+            mode, composing = composing, nil
+            pane.refresh()
+        else
+            errorText:SetText(de and "Bitte einen Titel ohne Doppelpunkt eingeben."
+                or "Enter a title without a colon.")
+        end
+    end
+    local publishNote = button(sheet, de and "Anheften" or "Pin note", 133, 0, 0, pin)
+    publishNote:ClearAllPoints()
+    publishNote:SetPoint("BOTTOMRIGHT", -12, 12)
+    local dismiss = button(sheet, de and "Abbrechen" or "Cancel", 114, 0, 0, function()
+        composing = nil
+        pane.refresh()
+    end)
+    dismiss:ClearAllPoints()
+    dismiss:SetPoint("BOTTOMLEFT", 12, 12)
+
+    local post = button(detail, "", 190, 0, 0, function() open(mode) end)
+    post:ClearAllPoints()
+    post:SetPoint("BOTTOMLEFT", 11, 12)
+    local roleNames = { T = de and "Tank" or "Tank", H = de and "Heiler" or "Healer", D = de and "DD" or "DPS" }
+    local roleOrder = { "T", "H", "D" }
+    local selectedRole, previousNote
+    local rolePicker = button(detail, "", 128, 0, 0, function()
+        local note = addon.boardNotes.records(guildKey)[selection]
+        if not note or not note.slots then return end
+        local start = 0
+        for i, role in ipairs(roleOrder) do if role == selectedRole then start = i end end
+        for i = 1, #roleOrder do
+            local role = roleOrder[(start + i - 1) % #roleOrder + 1]
+            if note.slots[role] > 0 then selectedRole = role; break end
+        end
+        pane.refresh()
+    end)
+    rolePicker:ClearAllPoints()
+    rolePicker:SetPoint("BOTTOMRIGHT", -135, 12)
+    local reply = button(detail, "", 118, 0, 0, function()
+        local note = addon.boardNotes.records(guildKey)[selection]
+        if note and orderChannel and guildKey == guildIdentity() then
+            addon.boardNotes.reply(note, player, orderClock(), broadcastOrder, note.slots and selectedRole)
+            pane.refresh()
+        end
+    end)
+    reply:ClearAllPoints()
+    reply:SetPoint("BOTTOMRIGHT", -11, 12)
+    local remove = button(detail, de and "Abnehmen" or "Unpin", 128, 0, 0, function()
+        local note = addon.boardNotes.records(guildKey)[selection]
+        if note and orderChannel and guildKey == guildIdentity() then
+            addon.boardNotes.close(note, player, broadcastOrder)
+            pane.refresh()
+        end
+    end)
+    remove:ClearAllPoints()
+    remove:SetPoint("BOTTOMRIGHT", -11, 12)
+
+    local function name(member)
+        return (roster[member] and roster[member].displayName) or member
+    end
+    local lastGuild
+    pane.refresh = function()
+        if lastGuild ~= guildKey then
+            selection, composing, lastGuild = nil, nil, guildKey
+        end
+        sheet:SetShown(composing ~= nil)
+        local read = guildAPI("GetMOTD", "GetGuildRosterMOTD")
+        local message = database and read and read()
+        motd:SetText(message and message ~= "" and message or (de and "Keine Gildennachricht hinterlegt." or "No guild message set."))
+        local records = addon.boardNotes.records(guildKey)
+        local now, keys, rows = orderClock(), {}, {}
+        local found
+        for id, note in pairs(records) do
+            if note.kind == mode and not note.closed and note.ends > now and roster[note.owner]
+                and (mode ~= "A" or officer(roster[note.owner])) then
+                keys[#keys + 1] = id
+                if selection == id then found = true end
+            end
+        end
+        table.sort(keys, function(a, b)
+            if records[a].ends == records[b].ends then return a < b end
+            if mode == "G" then return records[a].ends < records[b].ends end
+            return records[a].ends > records[b].ends
+        end)
+        if not found then selection = keys[1] end
+        for _, id in ipairs(keys) do
+            local note = records[id]
+            local dungeon = mode == "G" and dungeonFor(note)
+            rows[#rows + 1] = { text = titleFor(note, dungeon), boardCard = true,
+                banner = dungeon and ("Interface\\AddOns\\ForeverGuild\\Art\\Dungeon%02d"):format(dungeon[6]),
+                icon = "Interface\\AddOns\\ForeverGuild\\Art\\" .. (mode == "G" and "TabRoster" or "TabAdministration"),
+                subtitle = (mode == "G" and date("%d.%m. %H:%M", note.ends) .. "  ·  " or "") .. name(note.owner),
+                selected = selection == id,
+                action = function() selection = id; pane.refresh() end }
+        end
+        if #rows == 0 then rows[1] = { text = de and "Hier hängt noch kein Zettel." or "No notes here yet.", color = muted } end
+        render(rows)
+        local note = records[selection]
+        local showBanner = note ~= nil and mode == "G"
+        local dungeon = showBanner and dungeonFor(note)
+        banner:SetShown(showBanner)
+        shade:SetShown(showBanner)
+        edge:SetShown(showBanner)
+        if showBanner then
+            banner:SetTexture("Interface\\AddOns\\ForeverGuild\\Art\\" .. groupBanner(note, dungeon))
+            addon.fitDungeonArtwork(banner, detail:GetWidth() - 6, 154)
+        end
+        title:SetText(note and titleFor(note, dungeon) or "")
+        information:SetText(note and ((de and "Von " or "By ") .. name(note.owner)
+            .. (mode == "G" and ("\n" .. date("%d.%m.%Y %H:%M", note.ends) .. (de and " · Ortszeit" or " · local time")) or "")) or "")
+        local dungeonDetails = dungeon and (dungeon[de and 3 or 4] .. " · "
+            .. (de and "Stufe " or "Level ") .. dungeon[5])
+        local details = note and note.text or ""
+        if dungeonDetails then
+            if not note.activity then
+                local german = dungeon[3] .. " · Stufe " .. dungeon[5]
+                local english = dungeon[4] .. " · Level " .. dungeon[5]
+                for _, prefix in ipairs({german, english}) do
+                    if details == prefix or details:sub(1, #prefix + 1) == prefix .. "\n" then
+                        details = details:sub(#prefix + 2)
+                        break
+                    end
+                end
+            end
+            details = dungeonDetails .. (details ~= "" and ("\n" .. details) or "")
+        end
+        body:SetText(details)
+        signup:SetShown(mode == "G" and note ~= nil)
+        local members, placed = {}, {}
+        if note and mode == "G" then
+            local queue, assigned, counts = addon.boardNotes.placements(note, function(member) return roster[member] ~= nil end)
+            placed = assigned
+            if note.slots then
+                for _, role in ipairs(roleOrder) do
+                    if note.slots[role] > 0 then
+                        members[#members + 1] = { text = ("%s   %d / %d"):format(roleNames[role], counts[role], note.slots[role]),
+                            category = true, color = counts[role] < note.slots[role] and gold or {r=.64,g=.83,b=.68} }
+                    end
+                    if note.ownerRole == role then
+                        members[#members + 1] = memberRow(note.owner, de and " · Organisator" or " · Organizer")
+                    end
+                    for _, entry in ipairs(queue) do
+                        if entry.confirmed and entry.reply.role == role then members[#members + 1] = memberRow(entry.member) end
+                    end
+                end
+                local waitlist = false
+                for _, entry in ipairs(queue) do
+                    if not entry.confirmed then
+                        if not waitlist then
+                            members[#members + 1] = { text = de and "Warteliste" or "Waitlist", category = true }
+                            waitlist = true
+                        end
+                        local role = roleNames[entry.reply.role] or (de and "Rolle fehlt" or "Role missing")
+                        members[#members + 1] = memberRow(entry.member, " · " .. role)
+                    end
+                end
+            else
+                members[1] = memberRow(note.owner, de and " · Organisator" or " · Organizer")
+                for _, entry in ipairs(queue) do members[#members + 1] = memberRow(entry.member) end
+            end
+        end
+        renderSignups(members)
+        local answer = note and note.replies[player]
+        if previousNote ~= selection then
+            previousNote, selectedRole = selection, nil
+        end
+        if note and note.slots and (not selectedRole or note.slots[selectedRole] == 0) then
+            for _, role in ipairs({"D", "T", "H"}) do
+                if note.slots[role] > 0 then selectedRole = role; break end
+            end
+        end
+        rolePicker:SetShown(note ~= nil and note.slots ~= nil and note.owner ~= player and not (answer and answer.joined))
+        rolePicker:SetText((de and "Rolle: " or "Role: ") .. (roleNames[selectedRole] or "–"))
+        if answer and answer.joined and note.slots and not placed[player] then
+            reply:SetText(de and "Warteliste verlassen" or "Leave waitlist")
+        else
+            reply:SetText(answer and answer.joined and (de and "Absagen" or "Leave") or (de and "Mitmachen" or "Join"))
+        end
+        reply:SetShown(note ~= nil and mode == "G" and note.owner ~= player)
+        remove:SetText(mode == "G" and (de and "Termin absagen" or "Cancel event") or (de and "Abnehmen" or "Unpin"))
+        remove:SetShown(note ~= nil and note.owner == player)
+        reply:SetEnabled(not not orderChannel)
+        remove:SetEnabled(not not orderChannel)
+        post:SetText(mode == "A" and (de and "Mitteilung anheften" or "Pin announcement") or (de and "Dungeon-Termin planen" or "Plan dungeon run"))
+        post:SetShown(mode == "G" or officer(roster[player]))
+        post:SetEnabled(database ~= nil and not not orderChannel)
+    end
+    return pane, function(newMode)
+        if mode ~= newMode then composing, selection = nil, nil end
+        mode = newMode
+        pane.refresh()
+    end
+end
+
+local function buildBoard()
+    local page = panel(window, 0)
+    window.board = page
+    page:SetPoint("TOPLEFT", 14, -46)
+    page:SetPoint("BOTTOMRIGHT", -14, 13)
+    pageBackdrop(page, "GuildAdministration", 1.5, .88)
+    heading(page, de and "Schwarzes Brett" or "Bulletin board", 18, -14):SetFontObject(GameFontNormalLarge)
+
+    local section = "orders"
+    local notesPane, refreshNotes = buildBoardNotes(page)
+    local rail = page:CreateTexture(nil, "ARTWORK")
+    rail:SetPoint("TOPLEFT", 18, -38)
+    rail:SetPoint("TOPRIGHT", -18, -38)
+    rail:SetHeight(1)
+    rail:SetColorTexture(.50, .35, .19, .9)
+    local sections = {}
+    for index, entry in ipairs({
+        { "orders", de and "Handwerksaufträge" or "Crafting orders", "TabOrders" },
+        { "A", de and "Mitteilungen" or "Announcements", "TabAdministration" },
+        { "G", de and "Gruppe suchen" or "Find a group", "TabRoster" },
+    }) do
+        local key, caption, asset = entry[1], entry[2], entry[3]
+        local tab = CreateFrame("Button", nil, page)
+        tab:SetSize(174, 33)
+        tab:SetPoint("BOTTOMLEFT", rail, "TOPLEFT", 234 + (index - 1) * 175, -1)
+        local background = tab:CreateTexture(nil, "BACKGROUND")
+        background:SetAllPoints()
+        local tabArt = "Interface\\AddOns\\ForeverGuild\\Art\\BoardHeaderTab"
+        tab:SetHighlightTexture(tabArt .. "Active")
+        tab:GetHighlightTexture():SetAlpha(.2)
+
+        local icon = tab:CreateTexture(nil, "ARTWORK")
+        icon:SetSize(19, 19)
+        icon:SetPoint("LEFT", 12, -2)
+        icon:SetTexture("Interface\\AddOns\\ForeverGuild\\Art\\" .. asset)
+        local label = tab:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        label:SetPoint("LEFT", icon, "RIGHT", 7, 0)
+        label:SetPoint("RIGHT", tab, "RIGHT", -10, 0)
+        label:SetJustifyH("LEFT")
+        label:SetText(caption)
+
+        tab:SetScript("OnClick", function()
+            section = key
+            window.refreshBoard()
+        end)
+        sections[key] = function(active)
+            background:SetTexture(tabArt .. (active and "Active" or "Idle"))
+            if active then
+                label:SetTextColor(1, .85, .50)
+            else
+                label:SetTextColor(.83, .74, .61)
+            end
+        end
+    end
+    local create = button(page, de and "Neuen Auftrag aufgeben" or "Place new order", 210, 0, 0, openBoardCatalog)
+    create:ClearAllPoints()
+    create:SetPoint("TOPRIGHT", -17, -44)
+    local view, selection = "active", nil
+    local filters = {}
+    for index, choice in ipairs({
+        { "active", de and "Am Brett" or "On the board" },
+        { "mine", de and "Meine Aufträge" or "My orders" },
+        { "history", de and "Verlauf" or "History" },
+    }) do
+        local mode, caption = choice[1], choice[2]
+        filters[mode] = button(page, caption, 126, 17 + (index - 1) * 132, -44, function()
+            view, selection = mode, nil
+            window.refreshBoard()
+        end)
+    end
+
+    local left = contrastPanel(page)
+    left:SetPoint("TOPLEFT", 17, -75)
+    left:SetPoint("BOTTOMLEFT", 17, 17)
+    left:SetWidth(365)
+    local searchOrders = CreateFrame("EditBox", nil, left, "InputBoxTemplate")
+    searchOrders:SetPoint("TOPLEFT", 15, -13)
+    searchOrders:SetPoint("TOPRIGHT", -17, -13)
+    searchOrders:SetHeight(24)
+    searchOrders:SetAutoFocus(false)
+    searchOrders:SetMaxBytes(80)
+    searchOrders:SetScript("OnEscapePressed", searchOrders.ClearFocus)
+    local placeholder = heading(searchOrders, de and "Aufträge suchen" or "Search orders", 4, -5)
+    searchOrders:SetScript("OnTextChanged", function(self)
+        placeholder:SetShown(self:GetText() == "")
+        window.refreshBoard()
+    end)
+    local render = list(left, 9, -47, -32, 10, 325, 53, orderItemTooltip)
+
+    local detail = panel(page, .34, nil, .96)
+    detail:SetPoint("TOPLEFT", left, "TOPRIGHT", 10, 0)
+    detail:SetPoint("BOTTOMRIGHT", -17, 17)
+    local summary = contrastPanel(detail)
+    summary:SetPoint("TOPLEFT", 10, -10)
+    summary:SetPoint("TOPRIGHT", -10, -10)
+    summary:SetHeight(166)
+    local pin = summary:CreateTexture(nil, "ARTWORK")
+    pin:SetTexture("Interface\\ICONS\\INV_Misc_Note_01")
+    pin:SetSize(32, 32)
+    pin:SetPoint("TOPLEFT", 12, -12)
+    local title = orderText(summary, 55, -13, 14)
+    title:SetFontObject(GameFontNormalLarge)
+    local statusText = orderText(summary, 56, -37, 14)
+    local facts = orderText(summary, 13, -64, 13)
+    local note = orderText(summary, 13, -124, 13)
+    note:SetTextColor(.83, .72, .57)
+    local ingredients = contrastPanel(detail)
+    ingredients:SetPoint("TOPLEFT", 10, -194)
+    ingredients:SetPoint("BOTTOMRIGHT", -10, 77)
+    heading(ingredients, de and "Zutaten" or "Materials", 10, -9)
+    local renderMaterials = list(ingredients, 9, -28, -32, 8, 380, 20, orderItemTooltip)
+    local hint = detail:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    hint:SetPoint("BOTTOMLEFT", 14, 43)
+    hint:SetPoint("RIGHT", -14, 0)
+    hint:SetJustifyH("LEFT")
+
+    local function act(action)
+        local order = addon.board.records(guildKey)[selection]
+        if not order or guildKey ~= guildIdentity() or not orderChannel then return end
+        addon.board.action(order, player, action, broadcastOrder, sendOrderMessage, orderClock())
+        window.refreshBoard()
+    end
+    local mainAction, secondaryAction
+    local primary = button(detail, "", 210, 0, 0, function() act(mainAction) end)
+    primary:ClearAllPoints()
+    primary:SetPoint("BOTTOMRIGHT", -11, 11)
+    local secondary = button(detail, "", 142, 0, 0, function() act(secondaryAction) end)
+    secondary:ClearAllPoints()
+    secondary:SetPoint("BOTTOMLEFT", 11, 11)
+
+    local labels = {
+        O = de and "Offen" or "Open", W = de and "In Arbeit" or "In progress",
+        R = de and "Bereit zur Übergabe" or "Ready for handoff",
+        D = de and "Abgeschlossen" or "Completed", X = de and "Zurückgezogen" or "Withdrawn",
+        E = de and "Abgelaufen" or "Expired",
+    }
+    local stateOrder = { O = 1, W = 2, R = 3, D = 4, X = 5, E = 6 }
+    local stateColors = {
+        O = {r=.89,g=.73,b=.42}, W = {r=.61,g=.78,b=.90}, R = {r=.60,g=.83,b=.62},
+        D = {r=.60,g=.83,b=.62}, X = muted, E = muted,
+    }
+    local function display(key)
+        local member = roster[key]
+        return member and member.displayName or key or "–"
+    end
+    local function knowsRecipe(id)
+        for _, profession in pairs(ForeverGuildCharacter or {}) do
+            if profession.recipes and profession.recipes[id] then return true end
+        end
+        return false
+    end
+
+    window.refreshBoard = function()
+        for key, setActive in pairs(sections) do setActive(key == section) end
+        local showOrders = section == "orders"
+        notesPane:SetShown(not showOrders)
+        create:SetShown(showOrders)
+        left:SetShown(showOrders)
+        detail:SetShown(showOrders)
+        for mode, control in pairs(filters) do
+            control:SetShown(showOrders)
+            control:SetEnabled(mode ~= view)
+        end
+        if not showOrders then refreshNotes(section); return end
+        local records = addon.board.records(guildKey)
+        local now = orderClock()
+        create:SetEnabled(database ~= nil and not not orderChannel)
+        local keys, rows = {}, {}
+        local query = utf8Lower(searchOrders:GetText():match("^%s*(.-)%s*$"))
+        for key, order in pairs(records) do
+            local state = addon.board.state(order, now)
+            local closed = state == "D" or state == "X" or state == "E"
+            local own = order.owner == player or order.crafter == player or order.intent == "take"
+            if (view == "history" and closed) or (not closed and (view == "active" or own)) then
+                if query == "" or utf8Lower(recipeName(order.recipe)):find(query, 1, true)
+                    or utf8Lower(display(order.owner)):find(query, 1, true)
+                    or utf8Lower(display(order.crafter)):find(query, 1, true) then
+                    keys[#keys + 1] = key
+                end
+            end
+        end
+        table.sort(keys, function(a, b)
+            local first, second = records[a], records[b]
+            local firstState = stateOrder[addon.board.state(first, now)]
+            local secondState = stateOrder[addon.board.state(second, now)]
+            if firstState ~= secondState then return firstState < secondState end
+            local firstTime = tonumber(first.token:match("^%d+")) or 0
+            local secondTime = tonumber(second.token:match("^%d+")) or 0
+            if firstTime == secondTime then return a > b end
+            return firstTime > secondTime
+        end)
+        local found
+        for _, key in ipairs(keys) do if key == selection then found = true; break end end
+        if not found then selection = keys[1] end
+        local priorState
+        for _, key in ipairs(keys) do
+            local order = records[key]
+            local state = addon.board.state(order, now)
+            if priorState ~= state then
+                rows[#rows + 1] = { text = labels[state], color = stateColors[state], category = true }
+                priorState = state
+            end
+            local recipe = describeOrderRecipe(order)
+            rows[#rows + 1] = { text = ("%d × %s"):format(order.quantity, recipe.name),
+                subtitle = display(order.owner) .. (order.crafter and (" · " .. display(order.crafter)) or ""),
+                color = recipe.color, boardCard = true, statusColor = stateColors[state],
+                icon = recipe.icon, itemID = recipe.itemID, selected = key == selection,
+                action = function() selection = key; window.refreshBoard() end }
+        end
+        if #rows == 0 then
+            rows[1] = { text = de and "Keine Aufträge in dieser Ansicht." or "No orders in this view.", color = muted }
+        end
+        render(rows)
+        local order = records[selection]
+        title:SetText(order and ("%d × %s"):format(order.quantity, recipeName(order.recipe))
+            or (de and "Kein Auftrag ausgewählt" or "No order selected"))
+        local state = order and addon.board.state(order, now)
+        statusText:SetText(state and labels[state] or "")
+        if state then
+            local tone = stateColors[state]
+            statusText:SetTextColor(tone.r, tone.g, tone.b)
+        end
+        local deadline = order and order.expiresAt and ("\n" .. (de and "Offen bis: " or "Open until: ")
+            .. date("%d.%m.%Y %H:%M", order.expiresAt)) or ""
+        facts:SetText(order and ((de and "Auftraggeber: %s   ·   Handwerker: %s\n%s" or "Requester: %s   ·   Crafter: %s\n%s"):format(
+            display(order.owner), display(order.crafter),
+            order.supplies and (de and "Der Auftraggeber stellt die Materialien." or "The requester provides materials.")
+                or (de and "Der Handwerker stellt die Materialien." or "The crafter provides materials.")) .. deadline) or "")
+        note:SetText(order and order.note or "")
+        ingredients:SetShown(order ~= nil)
+        renderMaterials(materialRows(order and order.recipe, order and order.quantity))
+        local caption, alternate, message
+        mainAction, secondaryAction = nil, nil
+        if state == "E" then
+            message = de and "Die Laufzeit ist abgelaufen." or "The deadline has passed."
+        elseif order and order.intent then
+            message = de and "Wartet auf Bestätigung durch den Auftraggeber." or "Waiting for the requester's confirmation."
+        elseif order and order.state == "O" then
+            if order.owner == player then
+                secondaryAction, alternate = "cancel", de and "Zurückziehen" or "Withdraw"
+            elseif knowsRecipe(order.recipe) then
+                mainAction, caption = "take", de and "Auftrag übernehmen" or "Claim order"
+                if not (roster[order.owner] and roster[order.owner].online) then
+                    message = de and "Annahme wird bestätigt, sobald ihr beide online seid." or "Your claim is confirmed when you are both online."
+                end
+            else
+                message = de and "Rezept fehlt. Bekannte Berufe ggf. einmal öffnen." or "Recipe missing. Open your professions to update known recipes."
+            end
+        elseif order and order.crafter == player and (order.state == "W" or order.state == "R") then
+            secondaryAction, alternate = "release", de and "Freigeben" or "Release"
+            if order.state == "W" then
+                mainAction, caption = "ready", de and "Fertig zur Übergabe" or "Ready for handoff"
+            end
+        elseif order and order.owner == player and order.state == "R" then
+            mainAction, caption = "received", de and "Erhalten" or "Received"
+        end
+        hint:SetText(message or "")
+        primary:SetShown(mainAction ~= nil)
+        secondary:SetShown(secondaryAction ~= nil)
+        primary:SetText(caption or "")
+        secondary:SetText(alternate or "")
+        primary:SetEnabled(not not orderChannel)
+        secondary:SetEnabled(not not orderChannel)
+    end
 end
 
 requestBankSnapshot = function()
@@ -3178,8 +4440,8 @@ local function buildHelp()
                 or "With the relevant WoW permissions, you can edit the message and notes. Open WoW guild management for ranks and other guild actions."},
         {de and "Handwerksaufträge" or "Crafting orders",
             de and "Verfolge empfangene und gesendete Aufträge." or "Track incoming and sent orders.",
-            de and "„Meine Aufträge“ enthält deine eingegangenen Aufträge. Du kannst den Auftraggeber anflüstern und den Auftrag als erledigt markieren. Unter „Gesendete Aufträge“ siehst du den Status deiner Bestellungen. Das Briefsymbol an der Minimap führt dich zu neuen Aufträgen und Erledigt-Meldungen."
-                or "My orders lists incoming orders. You can whisper the requester and mark an order complete. Sent orders shows the status of your requests. The minimap envelope opens new orders and completion notifications."},
+            de and "„Meine Aufträge“ enthält deine eingegangenen Aufträge. Du kannst den Auftraggeber anflüstern und den Auftrag als erledigt markieren. Unter „Gesendete Aufträge“ siehst du den Status deiner Bestellungen. Das Briefsymbol an der Minimap führt dich zu neuen Aufträgen und Erledigt-Meldungen.\n\nFür einen gildenweiten Auftrag öffne das Schwarze Brett und klicke auf „Neuen Auftrag aufgeben“. Wähle ein Rezept, die Menge und eine Laufzeit von 1 bis 30 Tagen. Unter „Mitteilungen“ liest du die Gildennachricht und angeheftete Hinweise. Unter „Gruppenzettel“ kannst du Termine vorschlagen und dich eintragen."
+                or "My orders lists incoming orders. You can whisper the requester and mark an order complete. Sent orders shows the status of your requests. The minimap envelope opens new orders and completion notifications.\n\nTo offer an order to the guild, open the bulletin board and click Place new order. Select a recipe, quantity, and a duration of 1 to 30 days."},
         {"Log",
             de and "Prüfe, wann ForeverGuild Daten abgeglichen hat." or "Check when ForeverGuild synchronized data.",
             de and "Über „Diagnose exportieren“ kannst du die Protokolle für eine Fehlermeldung kopieren." or "Use Export diagnostics to copy the logs for a bug report."},
@@ -3321,6 +4583,7 @@ local function buildHelp()
 end
 
 local function toggle()
+    if uiInCombat() then return end
     if window then
         if window:IsShown() then window:Hide() else window:Show() end
         return
@@ -3389,6 +4652,11 @@ local function toggle()
             refresh()
         end)
         buildOrders()
+        window.boardTab = sideTab(window, 5, "Interface\\ICONS\\INV_Misc_Note_01", de and "Schwarzes Brett" or "Bulletin board", function()
+            activeTab = "board"
+            refresh()
+        end)
+        buildBoard()
     end
 
     if guildBank then
@@ -3572,8 +4840,9 @@ local function createOrderNotice()
     end)
     icon:SetScript("OnLeave", function() GameTooltip:Hide() end)
     icon:SetScript("OnClick", function()
+        if uiInCombat() then return end
         if not window or not window:IsShown() then toggle() end
-        if window and window.openUnreadOrders then window.openUnreadOrders() end
+        if window and window:IsShown() and window.openUnreadOrders then window.openUnreadOrders() end
         GameTooltip:Hide()
     end)
     updateOrderNotice()
@@ -3660,31 +4929,101 @@ startBankScan = function()
     end)
 end
 
+local function initializePlayer()
+    ForeverGuildDB = ForeverGuildDB or {}
+    ForeverGuildSettings = ForeverGuildSettings or {}
+    ForeverGuildRoles = ForeverGuildRoles or {}
+    ForeverGuildRoleRecords = ForeverGuildRoleRecords or {}
+    ForeverGuildLog = ForeverGuildLog or {}
+    ForeverGuildCharacter = ForeverGuildCharacter or {}
+    ForeverGuildDiscoveredRecipes = ForeverGuildDiscoveredRecipes or {}
+    player = fullName(UnitFullName("player"))
+    playerGivenName = utf8Lower(player:match("^[^%s%-]+"))
+    registered = registerMessagePrefix(prefix)
+    roleChannel = registerMessagePrefix(rolePrefix)
+    orderChannel = orderBook and registerMessagePrefix(orderBook.prefix)
+    if orderBook and not orderChannel then diagnose("WARN", "orders", "Addon channel unavailable; local queue remains active") end
+    updateSkills()
+    diagnose(registered and "INFO" or "WARN", "login", registered and "Addon channel registered" or "Addon channel registration failed")
+    updateGuild()
+    ForeverGuildItemCache = ForeverGuildItemCache or {}
+    local cacheKey = tostring(select(2, GetBuildInfo())) .. ":" .. GetLocale()
+    if ForeverGuildItemCache.key ~= cacheKey or type(ForeverGuildItemCache.items) ~= "table" then
+        ForeverGuildItemCache = { key = cacheKey, items = {} }
+    end
+    itemDetails = ForeverGuildItemCache.items
+    preloadRecipeItems()
+    createMinimapIcon()
+    createOrderNotice()
+    updateGuildShortcut()
+    after(5, requestSync)
+    queueBackgroundScan(8)
+    after(6, maybeShowSetup)
+    after(300 + math.random(0, 60), periodicSync)
+    if orderBook then after(5, pollOrders) end
+end
+
+local function handleItemData(itemID, success)
+    if recipeLoad.finish then recipeLoad.finish(itemID, not not success) end
+    if pendingItems[itemID] then
+        pendingItems[itemID] = nil
+        if success then
+            recipeItemDetails(itemID)
+            queueRefresh()
+            local catalog = window and window.boardCatalog
+            if catalog and catalog:IsShown() then
+                catalog.updateProgress()
+                catalog.queueItemRefresh()
+            end
+            local dialog = orderDialog
+            if dialog and dialog:IsShown() and not dialog.itemRefreshPending then
+                dialog.itemRefreshPending = true
+                after(.25, function()
+                    dialog.itemRefreshPending = nil
+                    if dialog:IsShown() then dialog.refreshMaterials() end
+                end)
+            end
+        end
+    end
+end
+
+local function handleGuildMessage(incomingPrefix, message, channel, sender)
+    if channel ~= "GUILD" or not database or not sender or guildKey ~= guildIdentity() then return end
+    if orderBook and incomingPrefix == orderBook.prefix then
+        receiveOrderMessage(sender, message)
+    elseif incomingPrefix == prefix then
+        if guildBank and (message == "BQ" or message:sub(1, 2) == "B:") then
+            local member = roleMemberKey(sender)
+            if member == player then return end
+            if not roster[member] then updateRoster(); member = roleMemberKey(sender) end
+            if not roster[member] then return end
+            if message == "BQ" then
+                if preference("bankShare") and GetTime() - lastBankReply >= 30 then
+                    lastBankReply = GetTime()
+                    guildBank.share(guildKey, enqueue, true)
+                end
+            elseif guildBank.receive(guildKey, member, message) and activeTab == "bank" then
+                queueRefresh()
+            end
+        else
+            receive(message, sender)
+        end
+    elseif incomingPrefix == rolePrefix and memberRoles then
+        receiveRole(message, sender)
+        if activeTab == "roster" then queueRefresh() end
+    end
+end
+
+local function closeCombatWindows()
+    for _, dialog in pairs({ window, settingsWindow, setupDialog, exportFrame,
+        orderDialog, orderMenu, window and window.boardCatalog, window and window.groupComposer }) do
+        if dialog:IsShown() then dialog:Hide() end
+    end
+end
+
 local function onEvent(_, event, ...)
     if event == "PLAYER_LOGIN" then
-        ForeverGuildDB = ForeverGuildDB or {}
-        ForeverGuildSettings = ForeverGuildSettings or {}
-        ForeverGuildRoles = ForeverGuildRoles or {}
-        ForeverGuildRoleRecords = ForeverGuildRoleRecords or {}
-        ForeverGuildLog = ForeverGuildLog or {}
-        ForeverGuildCharacter = ForeverGuildCharacter or {}
-        player = fullName(UnitFullName("player"))
-        playerGivenName = utf8Lower(player:match("^[^%s%-]+"))
-        registered = registerMessagePrefix(prefix)
-        roleChannel = registerMessagePrefix(rolePrefix)
-        orderChannel = orderBook and registerMessagePrefix(orderBook.prefix)
-        if orderBook and not orderChannel then diagnose("WARN", "orders", "Addon channel unavailable; local queue remains active") end
-        updateSkills()
-        diagnose(registered and "INFO" or "WARN", "login", registered and "Addon channel registered" or "Addon channel registration failed")
-        updateGuild()
-        createMinimapIcon()
-        createOrderNotice()
-        updateGuildShortcut()
-        after(5, requestSync)
-        queueBackgroundScan(8)
-        after(6, maybeShowSetup)
-        after(300 + math.random(0, 60), periodicSync)
-        if orderBook then after(5, pollOrders) end
+        initializePlayer()
     elseif event == "PLAYER_GUILD_UPDATE" or event == "PLAYER_ENTERING_WORLD" then
         if event == "PLAYER_ENTERING_WORLD" then
             updateGuildShortcut()
@@ -3697,15 +5036,20 @@ local function onEvent(_, event, ...)
             queueBackgroundScan(8)
             after(6, maybeShowSetup)
         end
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        closeCombatWindows()
     elseif event == "PLAYER_REGEN_ENABLED" then
         updateGuildShortcut()
         maybeShowSetup()
-    elseif event == "GET_ITEM_INFO_RECEIVED" then
-        local itemID, success = ...
-        if pendingItems[itemID] then
-            pendingItems[itemID] = nil
-            if success then queueRefresh() end
+    elseif event == "SPELL_DATA_LOAD_RESULT" then
+        local spellID, success = ...
+        if success and addon.recipeCatalog[spellID] and not addon.recipeCatalog[spellID].name then
+            local catalog = window and window.boardCatalog
+            if catalog and catalog:IsShown() then catalog.queueItemRefresh() end
+            queueRefresh()
         end
+    elseif event == "GET_ITEM_INFO_RECEIVED" or event == "ITEM_DATA_LOAD_RESULT" then
+        handleItemData(...)
     elseif event == "DISPLAY_SIZE_CHANGED" or event == "UI_SCALE_CHANGED" then
         resizeMainWindow()
     elseif event == "GUILDBANKFRAME_OPENED" or event == "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" then
@@ -3744,7 +5088,7 @@ local function onEvent(_, event, ...)
             end
         end
     elseif event == "GUILD_MOTD" then
-        if activeTab == "admin" then queueRefresh() end
+        if activeTab == "admin" or activeTab == "board" then queueRefresh() end
     elseif event == "GUILD_ROSTER_UPDATE" then
         updateRoster()
         dispatchOrders()
@@ -3765,31 +5109,7 @@ local function onEvent(_, event, ...)
                 or "Automatic profession opening was blocked by the client")
         end
     elseif event == "CHAT_MSG_ADDON" then
-        local incomingPrefix, message, channel, sender = ...
-        if channel ~= "GUILD" or not database or not sender or guildKey ~= guildIdentity() then return end
-        if orderBook and incomingPrefix == orderBook.prefix then
-            receiveOrderMessage(sender, message)
-        elseif incomingPrefix == prefix then
-            if guildBank and (message == "BQ" or message:sub(1, 2) == "B:") then
-                local member = roleMemberKey(sender)
-                if member == player then return end
-                if not roster[member] then updateRoster(); member = roleMemberKey(sender) end
-                if not roster[member] then return end
-                if message == "BQ" then
-                    if preference("bankShare") and GetTime() - lastBankReply >= 30 then
-                        lastBankReply = GetTime()
-                        guildBank.share(guildKey, enqueue, true)
-                    end
-                elseif guildBank.receive(guildKey, member, message) and activeTab == "bank" then
-                    queueRefresh()
-                end
-            else
-                receive(message, sender)
-            end
-        elseif incomingPrefix == rolePrefix and memberRoles then
-            receiveRole(message, sender)
-            if activeTab == "roster" then queueRefresh() end
-        end
+        handleGuildMessage(...)
     elseif backgroundScan then
         silenceProfessionWindow()
     elseif event == "NEW_RECIPE_LEARNED" then
@@ -3809,7 +5129,7 @@ end)
 for _, event in ipairs({
     "PLAYER_INTERACTION_MANAGER_FRAME_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_HIDE",
     "GUILDBANKFRAME_OPENED", "GUILDBANKFRAME_CLOSED", "GUILDBANKBAGSLOTS_CHANGED", "GUILDBANK_UPDATE_MONEY",
-    "GET_ITEM_INFO_RECEIVED", "DISPLAY_SIZE_CHANGED", "UI_SCALE_CHANGED", "PLAYER_REGEN_ENABLED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_GUILD_UPDATE", "GUILD_ROSTER_UPDATE", "GUILD_MOTD", "CHAT_MSG_ADDON",
+    "GET_ITEM_INFO_RECEIVED", "ITEM_DATA_LOAD_RESULT", "SPELL_DATA_LOAD_RESULT", "DISPLAY_SIZE_CHANGED", "UI_SCALE_CHANGED", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_GUILD_UPDATE", "GUILD_ROSTER_UPDATE", "GUILD_MOTD", "CHAT_MSG_ADDON",
     "ADDON_ACTION_BLOCKED", "ADDON_ACTION_FORBIDDEN", "NEW_RECIPE_LEARNED", "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "TRADE_SKILL_DATA_SOURCE_CHANGED", "SKILL_LINES_CHANGED",
 }) do
     pcall(frame.RegisterEvent, frame, event)

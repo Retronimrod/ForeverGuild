@@ -1,5 +1,8 @@
-## ForeverGuild 0.9.33
+# ForeverGuild v0.9.51
 
-- Added a Guild Bank section to settings with separate controls for automatic requests and sharing.
-- Updated the in-game guide for guild bank tabs, item search, balance, and permissions.
-- Includes the grouped bank inventory and the WoW gold, silver, and copper display.
+- New bulletin board for guild crafting orders, announcements, and dungeon runs.
+- Browse and filter the crafting catalog by profession, recipe, and equipment category. Create open orders with a deadline and track them through delivery.
+- Plan dungeon runs from 28 activities with localized level and zone information and individual artwork.
+- Set Tank, Healer and DPS slots. Members can sign up by role and move from the waitlist when a matching slot becomes free.
+- See class-colored participants with guild roster details on hover.
+- The addon closes during combat and can be reopened after combat ends.

@@ -1,10 +1,14 @@
 ## Interface: 16001
 ## Title: ForeverGuild
 ## Notes: Berufe und Rezepte in der Gilde
-## Version: 0.9.33
-## SavedVariables: ForeverGuildDB, ForeverGuildLog, ForeverGuildRoles, ForeverGuildRoleRecords, ForeverGuildSettings
-## SavedVariablesPerCharacter: ForeverGuildCharacter, ForeverGuildBackgroundScan, ForeverGuildDiagnostics, ForeverGuildOwnRoles, ForeverGuildSetupShown, ForeverGuildOrders, ForeverGuildOrderSequence, ForeverGuildOrderRelays, ForeverGuildBankCache, ForeverGuildBankGold
+## Version: 0.9.51
+## SavedVariables: ForeverGuildDB, ForeverGuildLog, ForeverGuildRoles, ForeverGuildRoleRecords, ForeverGuildSettings, ForeverGuildDiscoveredRecipes, ForeverGuildBoardNotes, ForeverGuildItemCache
+## SavedVariablesPerCharacter: ForeverGuildCharacter, ForeverGuildBackgroundScan, ForeverGuildDiagnostics, ForeverGuildOwnRoles, ForeverGuildSetupShown, ForeverGuildOrders, ForeverGuildOrderSequence, ForeverGuildOrderRelays, ForeverGuildBankCache, ForeverGuildBankGold, ForeverGuildBoard
 RecipeOutputs.lua
+RecipeCatalog.lua
 Orders.lua
+Board.lua
+BoardNotes.lua
+GroupActivities.lua
 GuildBank.lua
 ForeverGuild.lua

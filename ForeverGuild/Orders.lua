@@ -177,7 +177,7 @@ function orders.ackStatus(token, sender, revision, guild)
     if order and orders.belongsToGuild(order, guild) and order.statusVersion == revision then order.statusAck = revision end
 end
 
-function orders.materials(recipe)
+local function clientMaterials(recipe)
     local trade = C_TradeSkillUI
     if not trade or not trade.GetRecipeSchematic then return end
     local ok, data = pcall(trade.GetRecipeSchematic, recipe, false)
@@ -195,6 +195,20 @@ function orders.materials(recipe)
         end
     end
     return result
+end
+
+function orders.materials(recipe)
+    local live = clientMaterials(recipe)
+    if live and #live > 0 then return live end
+    local record = addon.recipeCatalog and addon.recipeCatalog[recipe]
+    if not record or not record.reagents then return live end
+    local items, slots = {}, {}
+    for item in pairs(record.reagents) do items[#items + 1] = item end
+    table.sort(items)
+    for _, item in ipairs(items) do
+        slots[#slots + 1] = { items = { item }, count = record.reagents[item] }
+    end
+    return slots
 end
 
 local relayLifetime = 14 * 86400

@@ -1,4 +1,4 @@
-ForeverGuild 0.9.33 · WoW Forever 1.60.1
+ForeverGuild 0.9.51 · WoW Forever 1.60.1
 
 Installation
 1. Den Ordner ForeverGuild aus der ZIP nach Interface/AddOns kopieren.
@@ -112,3 +112,92 @@ Sind nicht beide online, bleibt die Statusmeldung bis zum nächsten
 gemeinsamen Login vorgemerkt. Beide benötigen mindestens Version 0.9.14.
 
 Gildenbank / Guild bank: Open the in-game guild bank to scan viewable tabs and automatically share their contents with the guild. Request shared snapshots from online guild members in the Guild Bank tab.
+
+Schwarzes Brett (ab 0.9.34)
+Beim Rezept „In Auftrag geben“ öffnen, Menge und Materialstellung
+wählen, optional eine Notiz eintragen und „Ans Schwarze Brett hängen“
+klicken. Der eigene Seitenreiter zeigt aktive Aufträge, „Meine
+Aufträge“ und den Verlauf. Alle Beteiligten brauchen 0.9.34 oder neuer.
+
+Der Client des Auftraggebers bestätigt die erste gültige Annahme
+und synchronisiert den zugewiesenen Handwerker mit der Gilde.
+Bis zur Bestätigung bleibt die Annahme ausstehend. Auftraggeber
+und Handwerker müssen sich dafür online überschneiden. Das gilt
+auch für „Fertig zur Übergabe“ und die Freigabe. Ein Auftrag am
+Brett wird beim nächsten Abgleich sichtbar, wenn der Auftraggeber
+online ist. Bereits empfangene Einträge werden lokal gespeichert.
+
+Der Handwerker markiert den Auftrag als bereit oder gibt ihn wieder
+frei. Der Besteller bestätigt nach dem Handel „Erhalten“. Abgeschlossene
+und zurückgezogene Aufträge stehen im Verlauf. Persönliche Aufträge
+werden wie bisher separat angezeigt.
+
+
+Rezeptkatalog und Laufzeit (ab 0.9.35)
+Schwarzes Brett → Neuen Auftrag aufgeben öffnet den Rezeptkatalog.
+Links nach Beruf filtern, rechts nach Rezeptname, verfügbarem
+Ergebnisnamen oder Rezept-ID suchen. Die eingebauten Rezeptdaten
+werden um eigene und synchronisierte Gildenrezepte ergänzt. Ein
+bekannter Handwerker ist zum Erstellen nicht erforderlich.
+
+Die Laufzeit beträgt 1 bis 30 Tage (Vorgabe: 7). Offene Aufträge
+wandern nach Ablauf in den Verlauf. Bereits zugewiesene Aufträge
+können nach Fristablauf abgeschlossen werden. Gibt der Handwerker
+einen solchen Auftrag nach Fristablauf frei, wird er nicht erneut
+zur Annahme angeboten. Neue Aufträge mit Laufzeit erscheinen ab
+0.9.35. Bereits vorhandene Brettaufträge behalten ihren Status und
+ihre bisherige Laufzeit (unbefristet).
+
+Rezept- und Itemdaten (ab 0.9.36)
+Der Rezeptkatalog enthält die Herstellungsrezepte aus LibProfessionDB
+1.10.1 für WoW Forever 1.60.1.70938 (MIT, siehe Lizenzdatei).
+Nicht implementierte Einträge und Berufsrangbücher werden ausgefiltert.
+Deutsch und Englisch sind als Namensreserve enthalten. Fehlende
+Rezepte aus dem geöffneten Berufsfenster werden lokal ergänzt, ebenso
+bleiben synchronisierte Gildenrezepte über den Katalog erreichbar.
+Fehlende Zutaten werden nach Möglichkeit aus dem Katalog angezeigt,
+wenn die Spiel-API für das Rezept keine Zutaten bereitstellt.
+
+Beim Login und durch /reload beginnt im Hintergrund das Laden von
+Ergebnisitems und Zutaten. Die Items bestehender Aufträge kommen zuerst.
+Antworten des WoW-Clients werden asynchron übernommen.
+
+Mitteilungen und Gruppenzettel (ab 0.9.37)
+Am Schwarzen Brett gibt es neben Handwerksaufträgen die Bereiche
+Mitteilungen und Gruppenzettel. Oben steht die aktuelle Gildennachricht
+aus WoW. Gildenmeister und Offiziere können zusätzliche Mitteilungen
+anheften. Diese bleiben bis zu 30 Tage sichtbar.
+
+Ein Gruppenzettel besteht aus Titel, Details und einem Starttermin
+in deiner Ortszeit. Empfänger sehen den Termin in ihrer Ortszeit.
+Gildenmitglieder können zusagen oder ihre Zusage zurückziehen.
+Der Organisator kann seinen Zettel jederzeit abnehmen. Zum
+Starttermin verschwinden Gruppenzettel vom Brett. Für den Abgleich
+brauchen die Beteiligten 0.9.37 oder neuer. Eigene Zettel und Zusagen
+werden wiederholt gesendet, solange der jeweilige Absender online ist.
+
+Im Rezeptkatalog sind eingebettete Rezeptnamen direkt sichtbar.
+Erfolgreich geladene Itemdaten bleiben über /reload und Relog
+erhalten. Der Ladebalken zeigt fehlende WoW-Itemdaten; die Rezeptliste
+kann schon während des Nachladens bedient werden.
+
+Rezeptwähler (ab 0.9.39)
+Die Spalte „Kategorien“ filtert zusätzlich zum Beruf, etwa nach
+Leder, Kette oder Platte. Die Zeile zeigt das Rezept. Beim
+Darüberfahren öffnet sich der Rezepttooltip. Bei neuen Aufträgen
+ist „Ich stelle die Materialien“ standardmäßig angehakt.
+
+Gruppenzettel (ab 0.9.45)
+Die Aktivitätsauswahl zeigt Zone und Stufenempfehlung bzw. PvP-Stufe.
+Die Zusammensetzung ist frei einstellbar, standardmäßig 1 Tank,
+1 Heiler und 3 DD. Der Organisator belegt einen Platz seiner Rolle.
+Teilnehmer wählen ihre Rolle bei der Zusage. Ist diese Rolle voll,
+rücken wartende Teilnehmer bei einer Absage nach ihrer Anmeldezeit
+nach. Für rollenbasierte Zusagen brauchen die Beteiligten 0.9.45.
+
+Dungeonbanner (ab 0.9.48)
+Jeder der 28 Dungeons hat eigenes Banner-Artwork im
+Aktivitätswähler und auf dem Gruppenzettel. Bilddateien enthalten
+keine Schrift. Name, Zone und Stufe werden im Addon in Deutsch
+oder Englisch angezeigt (Englisch als Fallback). Eigene Titel
+und Notizen werden im Wortlaut angezeigt.
