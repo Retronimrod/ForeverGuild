@@ -5,7 +5,7 @@ local bankScan, startBankScan, scanVisibleBank, requestBankSnapshot
 local lastBankRequest, lastBankReply = -60, -60
 local showOrderMenu, showOrderDialog, orderMenu, orderDialog, orderChannel
 local orderNotice, updateOrderNotice
-local addonVersion = "0.9.59"
+local addonVersion = "0.9.61"
 local settingsWindow, minimapIcon, guildShortcut
 local updateGuildShortcut
 local prefix, rolePrefix = "ForeverGuild1", "ForeverGuildRole"
@@ -146,6 +146,7 @@ local function normalizeProfiles()
     end
     for key in pairs(database) do database[key] = nil end
     for key, data in pairs(normalized) do database[key] = data end
+    if addon.recipeFinder then addon.recipeFinder.invalidate() end
 end
 
 local refreshQueued = false
@@ -311,6 +312,7 @@ end
 
 local professionIDs = { 129, 164, 165, 171, 182, 185, 186, 197, 202, 333, 356, 393, 755 }
 local function updateSkills()
+    if addon.recipeFinder then addon.recipeFinder.invalidate() end
     if not GetProfessions or not GetProfessionInfo then
         if not trade or not trade.GetProfessionInfoBySkillLineID then return end
         for _, id in ipairs(professionIDs) do
@@ -374,6 +376,7 @@ local function scanProfession(expectedID)
         recipes = learned,
     }
     diagnose("INFO", "scan", ("Profession %d, %d learned recipes"):format(info.professionID, totalLearned))
+    if addon.recipeFinder then addon.recipeFinder.invalidate() end
     return true
 end
 
@@ -523,6 +526,7 @@ local function receive(message, sender)
         local profile = readProfile(table.concat(batch.parts))
         if profile then
             database[sender] = { professions = profile, updated = time() }
+            if addon.recipeFinder then addon.recipeFinder.invalidate() end
             logEvent((L["Received profession data · "]) .. sender:match("^[^-]+"))
             queueRefresh()
         else
@@ -1481,6 +1485,16 @@ refresh = function()
         return
     end
 
+    if window.finder then
+        local recipesMode = window.professionMode() == "recipes"
+        window.finder:SetShown(recipesMode)
+        window.recipePanel:SetShown(not recipesMode)
+        window.guildPanel:SetShown(not recipesMode)
+        if recipesMode then
+            window.finder.refresh(false)
+            return
+        end
+    end
     local query = utf8Lower(search:GetText())
     local function matches(value) return utf8Lower(value):find(query, 1, true) end
     local profiles = {}
@@ -1639,6 +1653,21 @@ local function button(parent, text, width, x, y, action)
     local control = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
     control:SetSize(width, 24)
     control:SetPoint("TOPLEFT", x, y)
+    -- Switches to the small button font when a caption would not fit the button.
+    local setText = control.SetText
+    control.SetText = function(self, value)
+        setText(self, value)
+        local label = self:GetFontString()
+        if not label then return end
+        self:SetNormalFontObject(GameFontNormal)
+        self:SetHighlightFontObject(GameFontHighlight)
+        self:SetDisabledFontObject(GameFontDisable)
+        if label:GetStringWidth() > self:GetWidth() - 16 then
+            self:SetNormalFontObject(GameFontNormalSmall)
+            self:SetHighlightFontObject(GameFontHighlightSmall)
+            self:SetDisabledFontObject(GameFontDisableSmall)
+        end
+    end
     control:SetText(text)
     control:SetScript("OnClick", action)
     return control
@@ -3504,6 +3533,60 @@ local function describeOrderRecipe(order)
 end
 
 
+-- Read-only access for the guild recipe search (RecipeFinder.lua). Uses the existing
+-- profession data, roster and order dialog; it sends no messages of its own.
+function addon.finderContext()
+    local function isMember(name)
+        return name == player or not next(roster) or roster[name] ~= nil
+    end
+    return {
+        source = function() return database end,
+        profiles = function()
+            local result = {}
+            for name, profile in pairs(database or {}) do
+                if type(profile) == "table" and type(profile.professions) == "table" then result[name] = profile end
+            end
+            if player then result[player] = { professions = ForeverGuildCharacter or {}, own = true } end
+            return result
+        end,
+        isMember = isMember,
+        isOnline = function(name)
+            return name == player or (roster[name] ~= nil and roster[name].online == true)
+        end,
+        member = function(name) return roster[name] end,
+        displayName = function(name)
+            local member = roster[name]
+            return member and member.displayName or name:match("^[^-]+") or name
+        end,
+        dataCoverage = function()
+            local with, without = 0, 0
+            if not next(roster) then
+                for _ in pairs(database or {}) do with = with + 1 end
+                return with, 0
+            end
+            for name in pairs(roster) do
+                if name == player or (database and database[name]) then with = with + 1 else without = without + 1 end
+            end
+            return with, without
+        end,
+        player = function() return player end,
+        recipeName = recipeName,
+        recipeDetails = recipeDetails,
+        professionName = professionName,
+        professionIcon = function(id) return professionIcons[id] end,
+        requestItem = recipeItemDetails,
+        recipeTooltip = recipeTooltip,
+        materialRows = materialRows,
+        order = function(recipe, crafter, professionID)
+            if crafter == player then return end
+            showOrderDialog(recipe, crafter, professionID)
+        end,
+        panel = contrastPanel,
+        button = button,
+        inCombat = uiInCombat,
+    }
+end
+
 local function buildOrders()
     if not orderBook then return end
     local page = panel(window, 0)
@@ -4608,8 +4691,13 @@ local function buildBoard()
         O = {r=.89,g=.73,b=.42}, W = {r=.61,g=.78,b=.90}, R = {r=.60,g=.83,b=.62},
         D = {r=.60,g=.83,b=.62}, X = muted, E = muted,
     }
+    -- The crafter arrives in the requester's spelling (e.g. "Name Surname-" on Forever);
+    -- normalize it locally so the own character and roster entries are recognized.
+    local function mine(name)
+        return name ~= nil and (name == player or fullName(name) == player)
+    end
     local function display(key)
-        local member = roster[key]
+        local member = roster[key] or (key and roster[fullName(key)])
         return member and member.displayName or key or "–"
     end
     local function knowsRecipe(id)
@@ -4639,7 +4727,7 @@ local function buildBoard()
         for key, order in pairs(records) do
             local state = addon.board.state(order, now)
             local closed = state == "D" or state == "X" or state == "E"
-            local own = order.owner == player or order.crafter == player or order.intent == "take"
+            local own = order.owner == player or mine(order.crafter) or order.intent == "take"
             if not addon.boardRights.hidden(guildKey, "O", order.owner, order.token)
                 and ((view == "history" and closed) or (not closed and (view == "active" or own))) then
                 if query == "" or utf8Lower(recipeName(order.recipe)):find(query, 1, true)
@@ -4716,7 +4804,7 @@ local function buildBoard()
             else
                 message = L["Recipe missing. Open your professions to update known recipes."]
             end
-        elseif order and order.crafter == player and (order.state == "W" or order.state == "R") then
+        elseif order and mine(order.crafter) and (order.state == "W" or order.state == "R") then
             secondaryAction, alternate = "release", L["Release"]
             if order.state == "W" then
                 mainAction, caption = "ready", L["Ready for handoff#2"]
@@ -4982,7 +5070,7 @@ local function buildHelp()
     local topics = {
         {L["Guild professions"],
             L["Find recipes and crafters in your guild."],
-            L["1. Search for an item or select a guild member on the right.\n\n2. Expand a profession and, if needed, a recipe category.\n\n3. Click Place order next to the recipe. Choose the quantity, check the materials and send the order."]},
+            L["By recipe: choose a category on the left or combine search terms such as “tailor bracers”. Filters narrow the list by profession, slot, quality, level, crafter and online status. Each item appears once; click it to see recipe variants, materials and every guild member who knows the recipe. Place order opens the order dialog with item and crafter preselected.\n\nBy crafter: select a guild member on the right, expand a profession and click Place order next to the recipe.\n\nOnly synced recipes count. Members without synced data are not treated as unable to craft."]},
         {L["Guild roster"],
             L["See who is online and which roles and specializations are listed."],
             L["Select your character to set your roles and specialization. Guild leaders and officers can also edit other members."]},
@@ -5211,14 +5299,38 @@ local function toggle()
     window.professions:SetPoint("TOPLEFT", 14, -46)
     window.professions:SetPoint("BOTTOMRIGHT", -14, 13)
     pageBackdrop(window.professions, "GuildProfessions", 1.5, .88)
+    -- View switch: guild-wide recipe search (default) or the per-crafter overview.
+    local modeButtons = {}
+    local function professionMode()
+        local view = ForeverGuildSettings and ForeverGuildSettings.professionView
+        return view == "crafters" and "crafters" or "recipes"
+    end
+    for index, mode in ipairs({ { "recipes", L["By recipe"] }, { "crafters", L["By crafter"] } }) do
+        modeButtons[mode[1]] = button(window.professions, mode[2], 150, 9 + (index - 1) * 156, -9, function()
+            ForeverGuildSettings = ForeverGuildSettings or {}
+            ForeverGuildSettings.professionView = mode[1]
+            refresh()
+        end)
+    end
+    window.professionMode = function()
+        local mode = professionMode()
+        for key, control in pairs(modeButtons) do control:SetEnabled(key ~= mode) end
+        return mode
+    end
     local guildPanel = contrastPanel(window.professions)
-    guildPanel:SetPoint("TOPRIGHT", -9, -9)
+    guildPanel:SetPoint("TOPRIGHT", -9, -40)
     guildPanel:SetPoint("BOTTOMRIGHT", -9, 9)
     guildPanel:SetWidth(285)
     heading(guildPanel, L["Guild members"], 14, -13)
     window.rosterLabel = heading(guildPanel, "", 14, -33)
     local recipePanel = panel(window.professions, 0, nil, .72)
-    recipePanel:SetPoint("TOPLEFT", 9, -9)
+    window.guildPanel, window.recipePanel = guildPanel, recipePanel
+    if addon.recipeFinder then
+        window.finder = addon.recipeFinder.create(window.professions, addon.finderContext())
+        window.finder:SetPoint("TOPLEFT", 9, -40)
+        window.finder:SetPoint("BOTTOMRIGHT", -9, 9)
+    end
+    recipePanel:SetPoint("TOPLEFT", 9, -40)
     recipePanel:SetPoint("BOTTOMRIGHT", guildPanel, "BOTTOMLEFT", -7, 0)
     window.memberLabel = heading(recipePanel, "", 14, -44)
     local orderHint = orderText(recipePanel, 14, -64, 31)
@@ -5499,6 +5611,7 @@ local function handleItemData(itemID, success)
         pendingItems[itemID] = nil
         if success then
             recipeItemDetails(itemID)
+            if addon.recipeFinder then addon.recipeFinder.invalidateItems() end
             queueRefresh()
             local catalog = window and window.boardCatalog
             if catalog and catalog:IsShown() then

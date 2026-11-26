@@ -14,7 +14,7 @@ read_globals = {
     "C_AddOns", "C_ChatInfo", "C_GuildInfo", "C_Item", "C_PartyInfo",
     "C_PlayerInteractionManager", "C_Spell", "C_SpellBook", "C_Timer", "C_TradeSkillUI",
     "ChatFontNormal", "ChatFrame_SendTell", "CreateColor", "CreateFrame", "Enum",
-    "ChatFrame_AddMessageEventFilter", "ChatFrameUtil", "ERR_CHAT_PLAYER_NOT_FOUND_S", "GameFontDisable", "GameFontHighlight", "GameFontHighlightSmall", "GameFontNormal", "GameFontNormalLarge",
+    "ChatFrame_AddMessageEventFilter", "ChatFrameUtil", "ERR_CHAT_PLAYER_NOT_FOUND_S", "GameFontDisable", "GameFontDisableSmall", "GameFontHighlight", "GameFontHighlightSmall", "GameFontNormal", "GameFontNormalSmall", "GameFontNormalLarge",
     "GameTooltip", "GetBuildInfo", "GetCurrentGuildBankTab", "GetGuildBankItemInfo",
     "GetGuildBankItemLink", "GetGuildBankMoney", "GetGuildBankTabInfo", "GetGuildInfo",
     "GetGuildRosterInfo", "GetGuildRosterLastOnline", "GetItemClassInfo", "GetItemInfo",
@@ -22,7 +22,7 @@ read_globals = {
     "GetNumGuildBankTabs", "GetNumGuildMembers", "GetProfessionInfo", "GetProfessions",
     "GetServerTime", "GetTalentTabInfo", "GetTime", "GuildBankFrame", "ITEM_QUALITY_COLORS",
     "InCombatLockdown", "InviteUnit", "IsInGuild", "LoadAddOn", "MAX_GUILDBANK_SLOTS_PER_TAB",
-    "Minimap", "QueryGuildBankTab", "RAID_CLASS_COLORS", "SetCurrentGuildBankTab", "UIParent",
+    "Minimap", "QueryGuildBankTab", "RAID_CLASS_COLORS", "CLASS_ICON_TCOORDS","SetCurrentGuildBankTab", "UIParent",
     "UISpecialFrames", "UnitAffectingCombat", "UnitClass", "UnitFactionGroup", "UnitFullName",
     "date", "geterrorhandler", "strlower", "time",
 }

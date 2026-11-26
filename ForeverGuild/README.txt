@@ -1,4 +1,4 @@
-ForeverGuild 0.9.59 · WoW Forever 1.60.1
+ForeverGuild 0.9.61 · WoW Forever 1.60.1
 
 Installation
 1. Den Ordner ForeverGuild aus der ZIP nach Interface/AddOns kopieren.
@@ -239,6 +239,22 @@ seltener nach (bis alle 10 Minuten), und „Spieler nicht online“-Meldungen
 dafür werden ausgeblendet. Lange stumme Partnerschaften gelten als inaktiv.
 Alle Gildenmitglieder sehen die Partnergilden. Bei einem anderen Realm
 weist das Fenster darauf hin, dass dies nur bei verbundenen Realms klappt.
+
+Neu in 0.9.61
+Gildenberufe → „Nach Rezepten“ (Standard): gildenweite Rezeptsuche wie im
+Auktionshaus. Links Kategorien (Waffen, Rüstung nach Typ und Platz, Schmuck,
+Behälter, Verbrauchsgüter, Materialien, Verzauberungen), oben kombinierbare
+Filter (Beruf, Platz, Qualität, Stufe, Gegenstandsstufe, Fertigkeit,
+Hersteller, Onlinestatus, Bindung). Die Suche versteht mehrere Begriffe und
+Synonyme, z. B. „schneider armschienen“ oder „alchi heiltrank“. Jeder
+Gegenstand erscheint nur einmal; ein Klick zeigt Rezeptvarianten, Materialien
+und alle Hersteller mit „Anflüstern“ und „Beauftragen“. „Nach Handwerkern“
+zeigt die bisherige Ansicht. Es zählen nur synchronisierte Rezepte.
+
+Neu in 0.9.60
+Schwarzes Brett: Wer einen Auftrag angenommen hat, sieht jetzt wieder
+„Bereit zur Übergabe“ und „Freigeben“ (Namen mit Nachnamen wurden nicht
+als eigener Charakter erkannt).
 
 Neu in 0.9.59
 Schwarzes Brett → „Ausgeblendete Beiträge“: ausgeblendete Beiträge ansehen
