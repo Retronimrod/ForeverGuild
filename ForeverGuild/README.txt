@@ -1,4 +1,4 @@
-ForeverGuild 0.9.51 · WoW Forever 1.60.1
+ForeverGuild 0.9.59 · WoW Forever 1.60.1
 
 Installation
 1. Den Ordner ForeverGuild aus der ZIP nach Interface/AddOns kopieren.
@@ -201,3 +201,50 @@ Aktivitätswähler und auf dem Gruppenzettel. Bilddateien enthalten
 keine Schrift. Name, Zone und Stufe werden im Addon in Deutsch
 oder Englisch angezeigt (Englisch als Fallback). Eigene Titel
 und Notizen werden im Wortlaut angezeigt.
+
+Rollen & Rechte (ab 0.9.52)
+Gildenverwaltung → Rollen & Rechte.
+Der Gildenmeister konfiguriert das Grundprofil und drei zusätzliche
+Rollen und weist sie einzelnen Charakteren zu. Die Rechte addieren
+sich. Die geprüfte Moderationsaktion „Ausblenden“ speichert den
+Moderator, ohne den ursprünglichen Auftrag oder Termin umzuschreiben.
+Das betrifft das Schwarze Brett, nicht die persönlichen Direktaufträge.
+Die Gilde sollte v0.9.52 gemeinsam verwenden, damit alle Clients
+Rollen und ausgeblendete Beiträge berücksichtigen.
+
+Transporttest für Partnergilden
+Zwei eingeloggte Charaktere mit v0.9.52 geben jeweils innerhalb von
+zwei Minuten /fguild partnertest <Charaktername> für die Gegenseite
+ein. Der Chat zeigt, ob Testnachrichten empfangen wurden. Dieser
+Test überträgt keine Beiträge und schaltet keine Partnerschaft frei.
+
+Partnergilden (ab 0.9.57)
+Unter Gildenverwaltung → Partnergilden kopiert der Gildenmeister
+den eigenen Verbindungscode. Beide Seiten fügen den jeweiligen
+fremden Code ein und bestätigen Gilde, Realm und Vermittler.
+Der Status wechselt nach dem gegenseitigen Nachrichtenabgleich.
+Dafür müssen die beiden eingetragenen Vermittler gleichzeitig
+online sein. Eine Seite kann die Verbindung jederzeit trennen.
+Die Partnerschaft überträgt derzeit keine Inhalte vom Schwarzen Brett.
+
+Neu in 0.9.58
+Ausgeblendete Beiträge: /fguild hidden listet sie, /fguild restore <Nummer>
+blendet einen Beitrag wieder ein (Moderationsrecht nötig). Alte Einträge
+werden nach Ablauf der Beiträge automatisch aufgeräumt.
+Das Rechte-Fenster zeigt an, ob Offiziere noch Mitteilungen veröffentlichen
+dürfen. Der Gildenmeister kann mit /fguild partnerrelay <Name> einen eigenen
+Twink als Vermittler für Partnergilden festlegen; danach braucht die
+Partnergilde den neuen Verbindungscode. Ohne Antwort fragt der Vermittler
+seltener nach (bis alle 10 Minuten), und „Spieler nicht online“-Meldungen
+dafür werden ausgeblendet. Lange stumme Partnerschaften gelten als inaktiv.
+Alle Gildenmitglieder sehen die Partnergilden. Bei einem anderen Realm
+weist das Fenster darauf hin, dass dies nur bei verbundenen Realms klappt.
+
+Neu in 0.9.59
+Schwarzes Brett → „Ausgeblendete Beiträge“: ausgeblendete Beiträge ansehen
+und wiederherstellen. Im Rechte-Fenster legt der Gildenmeister fest, welche
+Ränge als Offiziere gelten. Unter Partnergilden lässt sich der Vermittler
+direkt eintragen. Dungeon-Termine können mit „Auch für Partnergilden“
+geteilt werden; sie erscheinen bei der Partnergilde zum Ansehen, Anmeldung
+per Flüstern beim Organisator. Die Mitgliederliste zeigt Mitglieder,
+Online-Zahl, Gildenmeister, Offiziere und veraltete Addon-Versionen.

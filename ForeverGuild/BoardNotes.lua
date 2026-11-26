@@ -85,7 +85,7 @@ function notes.post(guild, player, kind, title, text, starts, leader, now, broad
         ends = ends, replies = {}, slots = slots, ownerRole = role, activity = activity }
     notes.records(guild)[key(player, token)] = note
     send(note, broadcast)
-    return true
+    return note
 end
 
 function notes.close(note, player, broadcast)
