@@ -210,12 +210,26 @@ local function synonymTags(token)
     return found
 end
 
--- One token: plain text, synonym tags, or a compound of two synonyms ("zweihandschwert").
+-- Structured terms: "lvl>=55", "ilvl>50", "stärke>=10". Field names (German and English).
+local FIELDS = { lvl = "level", level = "level", stufe = "level", ilvl = "itemLevel", itemlevel = "itemLevel",
+    gs = "itemLevel", skill = "skill", fertigkeit = "skill" }
+
+-- One token: plain text, synonym tags, a compound of two synonyms ("zweihandschwert"), an
+-- attribute ("stärke": the item must have it) or a comparison ("lvl>=55").
 function finder.parse(text)
     local tokens = {}
+    local attributes = addon.itemStats and addon.itemStats.synonyms or {}
     for word in lowerText(text):gmatch("[^%s,;/]+") do
-        local token = { text = word, tags = synonymTags(word) }
-        if not token.tags then
+        local name, op, value = word:match("^([^<>=]+)([<>]=?)(%d+)$")
+        if not name then name, op, value = word:match("^([^<>=]+)(=)(%d+)$") end
+        local token = { text = word }
+        if name and (FIELDS[name] or attributes[name]) then
+            token.field, token.attr, token.op, token.value = FIELDS[name], attributes[name], op, tonumber(value)
+        else
+            token.tags = synonymTags(word)
+            if attributes[word] and not token.tags then token.attr, token.op, token.value = attributes[word], ">", 0 end
+        end
+        if not token.tags and not token.field and not token.op then
             for split = 2, #word - 2 do
                 local head, tail = SYNONYMS[word:sub(1, split)], synonymTags(word:sub(split + 1))
                 if head and tail then
@@ -236,7 +250,31 @@ local function anyTag(group, tags)
     return false
 end
 
-function finder.tokenMatches(group, token)
+local function compareValue(value, op, limit)
+    if value == nil then return false end
+    if op == ">" then return value > limit end
+    if op == ">=" then return value >= limit end
+    if op == "<" then return value < limit end
+    if op == "<=" then return value <= limit end
+    return value == limit
+end
+
+-- Attribute values of a group's item (cached in ItemStats); nil while unknown.
+local function groupStats(group, ctx)
+    if not group.itemID or not addon.itemStats then return nil end
+    local values = addon.itemStats.of(group.itemID)
+    if not values and ctx and ctx.requestItem then ctx.requestItem(group.itemID) end
+    return values
+end
+finder.groupStats = groupStats
+
+function finder.tokenMatches(group, token, ctx)
+    if token.field then return compareValue(group[token.field], token.op, token.value) end
+    if token.attr then
+        if token.op == ">" and token.value == 0 and group.haystack:find(token.text, 1, true) then return true end
+        local values = groupStats(group, ctx)
+        return values ~= nil and compareValue(values[token.attr], token.op, token.value)
+    end
     if group.haystack:find(token.text, 1, true) then return true end
     if token.tags and anyTag(group, token.tags) then return true end
     local compound = token.compound
@@ -275,6 +313,7 @@ local function itemMeta(group, ctx)
         end
         group.name = name or ctx.recipeName(group.recipes[1])
         group.quality, group.itemLevel, group.level, group.bind = quality, itemLevel, requiredLevel, bindType
+        group.trade, group.tradeReason = nil, nil
         if group.level == 0 then group.level = 1 end
     else
         group.name = ctx.recipeName(group.recipes[1])
@@ -287,6 +326,8 @@ local function itemMeta(group, ctx)
     if group.slot then names[#names + 1] = slotLabel(group.slot) end
     if group.subclassName then names[#names + 1] = group.subclassName end
     group.haystack = lowerText(table.concat(names, "\n"))
+    -- Neither a loaded item nor a resolvable recipe name: not useful in normal lists.
+    group.unresolved = group.name == nil or group.name:match("^#%d+$") ~= nil
 end
 
 local recipeMeta = {}
@@ -308,47 +349,56 @@ local function describeRecipe(recipe, professionID, ctx)
     end
     if not icon and C_Spell and C_Spell.GetSpellTexture then icon = C_Spell.GetSpellTexture(recipe) end
     meta = { key = outputID and ("i" .. outputID) or ("s" .. recipe), itemID = outputID, top = top, sub = sub,
-        slot = slot, icon = icon, subclassName = subclassName }
+        slot = slot, icon = icon, subclassName = subclassName, equipLoc = equipLoc ~= "" and equipLoc or nil }
     recipeMeta[recipe] = meta
     return meta
 end
 
-local index, dirty, itemsDirty, source = nil, true, false, nil
-function finder.invalidate() dirty = true end
-function finder.invalidateItems() itemsDirty = true end
+-- Every search context (guild professions, order picker) keeps its own index; profession
+-- changes rebuild it, arriving item data only refreshes the groups that were still pending.
+local generation, itemGeneration = 1, 1
+function finder.invalidate() generation = generation + 1 end
+function finder.invalidateItems() itemGeneration = itemGeneration + 1 end
 
 local function build(ctx)
     local groups, byKey = {}, {}
     local skills = addon.recipeSkills or {}
+    local function addRecipe(recipe, professionID)
+        local meta = describeRecipe(recipe, professionID, ctx)
+        local group = byKey[meta.key]
+        if not group then
+            group = { key = meta.key, itemID = meta.itemID, top = meta.top, sub = meta.sub,
+                slot = meta.slot, icon = meta.icon or ctx.professionIcon(professionID), equipLoc = meta.equipLoc,
+                subclassName = meta.subclassName, recipes = {}, recipeSet = {}, professions = {},
+                crafters = {}, professionID = professionID }
+            byKey[meta.key] = group
+            groups[#groups + 1] = group
+        end
+        if not group.recipeSet[recipe] then
+            group.recipeSet[recipe] = true
+            group.recipes[#group.recipes + 1] = recipe
+            local skill = skills[recipe]
+            if skill and (not group.skill or skill < group.skill) then group.skill = skill end
+        end
+        group.professions[professionID] = true
+        return group
+    end
     for name, profile in pairs(ctx.profiles()) do
         for professionID, entry in pairs(profile.professions or {}) do
             if type(entry) == "table" and type(entry.recipes) == "table" then
                 for recipe in pairs(entry.recipes) do
-                    local meta = describeRecipe(recipe, professionID, ctx)
-                    local group = byKey[meta.key]
-                    if not group then
-                        group = { key = meta.key, itemID = meta.itemID, top = meta.top, sub = meta.sub,
-                            slot = meta.slot, icon = meta.icon or ctx.professionIcon(professionID),
-                            subclassName = meta.subclassName, recipes = {}, recipeSet = {}, professions = {},
-                            crafters = {}, professionID = professionID }
-                        byKey[meta.key] = group
-                        groups[#groups + 1] = group
-                    end
-                    if not group.recipeSet[recipe] then
-                        group.recipeSet[recipe] = true
-                        group.recipes[#group.recipes + 1] = recipe
-                        local skill = skills[recipe]
-                        if skill and (not group.skill or skill < group.skill) then group.skill = skill end
-                    end
-                    group.professions[professionID] = true
-                    local known = group.crafters[name]
-                    if not known then
+                    local group = addRecipe(recipe, professionID)
+                    if not group.crafters[name] then
                         group.crafters[name] = { name = name, recipe = recipe, professionID = professionID,
                             skill = entry.skill, maximum = entry.maximum, updated = profile.updated, own = profile.own }
                     end
                 end
             end
         end
+    end
+    -- Confirmed recipes without a known crafter (order picker only).
+    if ctx.catalogRecipes then
+        for recipe, professionID in pairs(ctx.catalogRecipes()) do addRecipe(recipe, professionID) end
     end
     for _, group in ipairs(groups) do
         table.sort(group.recipes)
@@ -360,15 +410,20 @@ end
 
 function finder.ensureIndex(ctx)
     local current = ctx.source and ctx.source()
-    if dirty or not index or current ~= source then
-        index, dirty, itemsDirty, source = build(ctx), false, false, current
-    elseif itemsDirty then
-        itemsDirty = false
-        for _, group in ipairs(index.groups) do
-            if group.pending then itemMeta(group, ctx) end
+    local state = ctx.finderState
+    if not state then
+        state = {}
+        ctx.finderState = state
+    end
+    if not state.index or state.generation ~= generation or current ~= state.source then
+        state.index, state.generation, state.itemGeneration, state.source = build(ctx), generation, itemGeneration, current
+    elseif state.itemGeneration ~= itemGeneration then
+        state.itemGeneration = itemGeneration
+        for _, group in ipairs(state.index.groups) do
+            if group.pending or group.unresolved or group.trade == "UNKNOWN" then itemMeta(group, ctx) end
         end
     end
-    return index
+    return state.index
 end
 
 local function between(value, low, high)
@@ -402,20 +457,81 @@ local SORTERS = {
     skill = function(group) return group.skill or -1 end,
     crafters = function(group) return group.crafterCount end,
     online = function(group) return group.onlineCount end,
+    value = function(group) return finder.comparisonValue(group) or -math.huge end,
 }
 
+-- Equipment filters: armorClass (sub of armor), usable (true = usable by this class),
+-- levelMode ("now" = up to the own level, "future" = up to 60), better ("ilvl", "attrs",
+-- "score"), attrs { { id, min } }, attrMode ("all"/"any"), includeUncrafted, showUnresolved.
+local function equipmentMatch(group, filters, ctx, info)
+    local stats = addon.itemStats
+    if filters.armorClass and not (group.top == "armor" and group.sub == filters.armorClass) then return false end
+    local level = UnitLevel and UnitLevel("player") or 60
+    if filters.levelMode == "now" and (not group.level or group.level > level) then return false end
+    if filters.levelMode == "future" and (not group.level or group.level > 60) then return false end
+    if filters.usable then
+        local usable = stats and stats.usable(group.itemID)
+        if usable == nil then info.noStats = info.noStats + 1 return false end
+        if not usable then return false end
+    end
+    local attrs = filters.attrs
+    local needStats = (attrs and #attrs > 0) or filters.better
+    if not needStats then return true end
+    local values = groupStats(group, ctx)
+    if not values then info.noStats = info.noStats + 1 return false end
+    if attrs and #attrs > 0 then
+        local any = false
+        for _, rule in ipairs(attrs) do
+            local hit = (values[rule.id] or 0) > 0 and (values[rule.id] or 0) >= (rule.min or 0)
+            if hit then any = true elseif filters.attrMode ~= "any" then return false end
+        end
+        if filters.attrMode == "any" and not any then return false end
+    end
+    if filters.better then
+        local comparison = stats.compare(group.itemID, group.equipLoc)
+        if not comparison then return false end
+        group.comparison = comparison
+        if filters.better == "ilvl" and comparison.itemLevel <= 0 then return false end
+        if filters.better == "score" and not (comparison.score and comparison.score > 0) then return false end
+        if filters.better == "attrs" then
+            if not attrs or #attrs == 0 then return false end
+            for _, rule in ipairs(attrs) do
+                if (comparison.diff[rule.id] or 0) <= 0 then return false end
+            end
+        end
+    end
+    return true
+end
+
 -- filters: text, profession, category {top, sub, slot}, slot, quality, levelMin/Max,
--- itemLevelMin/Max, skillMax, crafter, online ("online"/"offline"), bind ("trade"/"bop").
+-- itemLevelMin/Max, skillMax, crafter, online ("online"/"offline"), bind ("trade"/"bop"),
+-- plus the equipment filters above.
 function finder.query(ctx, filters, sortKey, descending)
     local data = finder.ensureIndex(ctx)
     local tokens = finder.parse(filters.text or "")
     local tokenHits = {}
     local results, counts = {}, {}
+    local info = { unresolved = 0, pending = 0, noStats = 0, bound = 0, bindUnknown = 0 }
     local category = filters.category or {}
     for _, group in ipairs(data.groups) do
         local crafters, online = finder.crafters(group, ctx)
         group.crafterList, group.crafterCount, group.onlineCount = crafters, #crafters, online
-        local ok = #crafters > 0
+        local ok = #crafters > 0 or (filters.includeUncrafted and ctx.catalogRecipes ~= nil)
+        -- Only items that can be handed over (or services such as enchantments) are orderable.
+        -- Applied before counts and sorting; no filter or option can bypass it.
+        local status = finder.groupTradeStatus(group, ctx)
+        if status == "NON_TRADEABLE" then
+            info.bound = info.bound + 1
+            ok = false
+        elseif status == "UNKNOWN" then
+            info.bindUnknown = info.bindUnknown + 1
+            ok = false
+        end
+        if group.pending then info.pending = info.pending + 1 end
+        if group.unresolved then
+            info.unresolved = info.unresolved + 1
+            if not filters.showUnresolved then ok = false end
+        end
         if ok and filters.profession and not group.professions[filters.profession] then ok = false end
         if ok and filters.slot and group.slot ~= filters.slot then ok = false end
         if ok and filters.quality and (not group.quality or group.quality < filters.quality) then ok = false end
@@ -425,11 +541,11 @@ function finder.query(ctx, filters, sortKey, descending)
         if ok and filters.crafter and not (group.crafters[filters.crafter] and ctx.isMember(filters.crafter)) then ok = false end
         if ok and filters.online == "online" and online == 0 then ok = false end
         if ok and filters.online == "offline" and online > 0 then ok = false end
-        if ok and filters.bind == "trade" and not (group.bind == 0 or group.bind == 2 or group.bind == 3) then ok = false end
-        if ok and filters.bind == "bop" and not (group.bind == 1 or group.bind == 4) then ok = false end
+
+        if ok and not equipmentMatch(group, filters, ctx, info) then ok = false end
         if ok then
             for position, token in ipairs(tokens) do
-                if finder.tokenMatches(group, token) then
+                if finder.tokenMatches(group, token, ctx) then
                     tokenHits[position] = true
                 else
                     ok = false
@@ -469,7 +585,7 @@ function finder.query(ctx, filters, sortKey, descending)
         if nameA ~= nameB then return nameA < nameB end
         return a.key < b.key
     end)
-    return results, counts, unknown, #data.groups
+    return results, counts, unknown, #data.groups, info
 end
 
 ----------------------------------------------------------------------------------------
@@ -577,6 +693,8 @@ local function itemTooltip(owner, itemID, recipe, ctx)
         GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
         GameTooltip:SetHyperlink("item:" .. itemID)
         GameTooltip:Show()
+        -- Blizzard comparison tooltip with the equipped item, when the client provides it.
+        if GameTooltip_ShowCompareItem then pcall(GameTooltip_ShowCompareItem, GameTooltip) end
     elseif recipe then
         owner.entry = { recipe = recipe }
         ctx.recipeTooltip(owner)
@@ -593,9 +711,13 @@ local function formatDate(stamp)
     return stamp and date("%d.%m.%y", stamp) or "–"
 end
 
-function finder.create(parent, ctx)
+-- opts.picker: order picker (confirmed recipes without crafter selectable, "Post on the
+-- bulletin board" in the detail view; ctx.public(recipe, professionID) handles it).
+function finder.create(parent, ctx, opts)
+    opts = opts or {}
     local view = CreateFrame("Frame", nil, parent)
-    local filters, sortKey, descending = { category = {} }, "name", false
+    local function freshFilters() return { category = {}, includeUncrafted = opts.picker or nil, attrs = {} } end
+    local filters, sortKey, descending = freshFilters(), "name", false
     local expanded, selectedKey, results = {}, nil, {}
     local searchSerial, numberSerial = 0, 0
 
@@ -745,11 +867,13 @@ function finder.create(parent, ctx)
         return options
     end, function() return filters.crafter or "all" end,
         function(value) filters.crafter = value ~= "all" and value or nil; changed() end, 180)
-    local bind = addDropdown(function()
-        return { { "all", L["Any binding"] }, { "trade", L["Tradable"] }, { "bop", L["Bind on pickup"] } }
-    end, function() return filters.bind or "all" end,
-        function(value) filters.bind = value ~= "all" and value or nil; changed() end)
-    tooltipFor(bind, L["Binding"], L["Only items whose binding is known from the item data are shown."])
+
+    addDropdown(function()
+        return { { "all", L["Any armor class"] }, { "cloth", finder.label("armor", "cloth") },
+            { "leather", finder.label("armor", "leather") }, { "mail", finder.label("armor", "mail") },
+            { "plate", finder.label("armor", "plate") } }
+    end, function() return filters.armorClass or "all" end,
+        function(value) filters.armorClass = value ~= "all" and value or nil; changed() end)
 
     local numbers = {}
     local function readNumbers()
@@ -788,23 +912,162 @@ function finder.create(parent, ctx)
         "itemMin", "itemMax")
     numberGroup(L["Max. skill"], L["Highest required profession skill. Recipes without known skill requirement are hidden while set."],
         "skill")
+    local advancedShown = false
+    local advancedButton = ctx.button(filterPanel, "", 10, 0, 0, function()
+        advancedShown = not advancedShown
+        view.refresh(false)
+    end)
+    flowItems[#flowItems + 1] = { frame = advancedButton, dy = -1, width = function()
+        return math.ceil(math.max(textWidth(L["Show advanced filters"], GameFontNormal),
+            textWidth(L["Hide advanced filters"], GameFontNormal))) + 30 end, sized = true }
     local reset = ctx.button(filterPanel, L["Reset filters"], math.ceil(textWidth(L["Reset filters"], GameFontNormal)) + 30,
         0, 0, function() view.reset() end)
     flowItems[#flowItems + 1] = { frame = reset, dy = -1, width = function() return reset:GetWidth() end }
+    local activeText = text(filterPanel, "GameFontHighlightSmall")
+    activeText:SetWordWrap(true)
 
+    -- Advanced filters (equipment, attributes, comparison); folded away by default.
+    local advanced = ctx.panel(view)
+    advanced:SetPoint("TOPLEFT", filterPanel, "BOTTOMLEFT", 0, -5)
+    advanced:SetPoint("TOPRIGHT", filterPanel, "BOTTOMRIGHT", 0, -5)
+    advanced:SetHeight(70)
+    advanced:Hide()
+    local advancedItems = {}
+    local function advancedDropdown(options, get, set, maximum)
+        local control = dropdown(advanced, 120, options, get, set)
+        dropdowns[#dropdowns + 1] = control
+        advancedItems[#advancedItems + 1] = { frame = control, sized = true, width = function()
+            local widest = 0
+            for _, option in ipairs(options()) do widest = math.max(widest, textWidth(option[2])) end
+            return math.floor(math.min(maximum or 240, math.max(96, widest + 46)))
+        end }
+        return control
+    end
+    local function advancedCheck(caption, hint, get, set)
+        local holder = CreateFrame("Frame", nil, advanced)
+        holder:SetHeight(24)
+        local box = CreateFrame("CheckButton", nil, holder, "UICheckButtonTemplate")
+        box:SetSize(24, 24)
+        box:SetPoint("LEFT")
+        box:SetScript("OnClick", function(self) set(self:GetChecked() and true or false); changed() end)
+        local label = text(holder, "GameFontHighlightSmall")
+        label:SetPoint("LEFT", box, "RIGHT", 2, 0)
+        label:SetText(caption)
+        if hint then tooltipFor(box, caption, hint) end
+        holder.Sync = function() box:SetChecked(get() and true or false) end
+        advancedItems[#advancedItems + 1] = { frame = holder, sized = true, sync = holder.Sync,
+            width = function() return math.ceil(textWidth(caption, GameFontHighlightSmall)) + 32 end }
+    end
+    advancedCheck(L["Usable by my character"], L["Checked with the item tooltip: class, armor and weapon restrictions. Items not loaded yet are hidden while set."],
+        function() return filters.usable end, function(value) filters.usable = value or nil end)
+    advancedDropdown(function()
+        return { { "all", L["Any required level"] }, { "now", L["Usable at my current level"] },
+            { "future", L["Also future gear up to level 60"] } }
+    end, function() return filters.levelMode or "all" end,
+        function(value) filters.levelMode = value ~= "all" and value or nil; changed() end)
+    advancedDropdown(function()
+        local options = { { "all", L["No comparison filter"] }, { "ilvl", L["Higher item level than equipped"] },
+            { "attrs", L["Improves the selected attributes"] } }
+        if addon.itemStats and addon.itemStats.hasWeights() then options[#options + 1] = { "score", L["Higher weighted score"] } end
+        return options
+    end, function() return filters.better or "all" end,
+        function(value) filters.better = value ~= "all" and value or nil; changed() end)
+    local attributeOptions = function()
+        local options = { { "none", L["Choose attribute"] } }
+        for _, attribute in ipairs(addon.itemStats and addon.itemStats.attributes or {}) do
+            options[#options + 1] = { attribute.id, addon.itemStats.label(attribute.id) }
+        end
+        return options
+    end
+    local attributeRows = {}
+    local function readAttributes()
+        filters.attrs = {}
+        for _, row in ipairs(attributeRows) do
+            if row.shown and row.id then filters.attrs[#filters.attrs + 1] = { id = row.id, min = tonumber(row.box:GetText()) } end
+        end
+        numberSerial = numberSerial + 1
+        local serial = numberSerial
+        C_Timer.After(.3, function() if serial == numberSerial then view.refresh(true) end end)
+    end
+    for index = 1, 4 do
+        local holder = CreateFrame("Frame", nil, advanced)
+        holder:SetHeight(24)
+        local row = { holder = holder, shown = index == 1 }
+        row.drop = dropdown(holder, 150, attributeOptions, function() return row.id or "none" end, function(value)
+            row.id = value ~= "none" and value or nil
+            readAttributes()
+        end)
+        row.drop:SetPoint("LEFT")
+        dropdowns[#dropdowns + 1] = row.drop
+        local atLeast = text(holder, "GameFontHighlightSmall")
+        atLeast:SetPoint("LEFT", row.drop, "RIGHT", 6, 0)
+        atLeast:SetText(L["at least"])
+        row.box = numberBox(holder, 34, readAttributes)
+        row.box:SetPoint("LEFT", atLeast, "RIGHT", 8, 0)
+        attributeRows[index] = row
+        advancedItems[#advancedItems + 1] = { frame = holder, sized = true, visible = function() return row.shown end,
+            width = function() return 150 + 12 + math.ceil(textWidth(L["at least"], GameFontHighlightSmall)) + 46 end }
+    end
+    local addAttribute = ctx.button(advanced, L["+ Attribute"], math.ceil(textWidth(L["+ Attribute"], GameFontNormal)) + 28, 0, 0,
+        function()
+            for _, row in ipairs(attributeRows) do
+                if not row.shown then row.shown = true; break end
+            end
+            view.refresh(false)
+        end)
+    advancedItems[#advancedItems + 1] = { frame = addAttribute, dy = -1, width = function() return addAttribute:GetWidth() end }
+    advancedCheck(L["At least one attribute is enough"], L["Off: every selected attribute is required. On: one of them is enough."],
+        function() return filters.attrMode == "any" end, function(value) filters.attrMode = value and "any" or nil end)
+    if opts.picker then
+        advancedCheck(L["Include recipes without known crafter"], L["Confirmed recipes nobody in the guild is known to craft yet. Useful for public orders."],
+            function() return filters.includeUncrafted end, function(value) filters.includeUncrafted = value or nil end)
+    end
+    advancedCheck(L["Show incomplete recipe data"], L["Recipes whose name or item could not be resolved by the client. Hidden by default."],
+        function() return filters.showUnresolved end, function(value) filters.showUnresolved = value or nil end)
+    local statsHint = text(advanced, "GameFontDisableSmall")
+    statsHint:SetWordWrap(true)
+
+    local function layoutItems(container, items, startY)
+        local available = container:GetWidth()
+        if available <= 0 then return startY end
+        local x, y = 10, startY
+        for _, item in ipairs(items) do
+            local visible = not item.visible or item.visible()
+            item.frame:SetShown(visible)
+            if visible then
+                local width = item.width()
+                if item.sized then item.frame:SetWidth(width) end
+                if x > 10 and x + width > available - 10 then x, y = 10, y - 30 end
+                item.frame:ClearAllPoints()
+                item.frame:SetPoint("TOPLEFT", x + (item.dx or 0), y + (item.dy or 0))
+                x = x + width + 8
+            end
+        end
+        return y
+    end
     local function flow()
         local available = filterPanel:GetWidth()
         if available <= 0 then return end
-        local x, y = 10, -7
-        for _, item in ipairs(flowItems) do
-            local width = item.width()
-            if item.sized then item.frame:SetWidth(width) end
-            if x > 10 and x + width > available - 10 then x, y = 10, y - 30 end
-            item.frame:ClearAllPoints()
-            item.frame:SetPoint("TOPLEFT", x + (item.dx or 0), y + (item.dy or 0))
-            x = x + width + 8
+        advancedButton:SetText(advancedShown and L["Hide advanced filters"] or L["Show advanced filters"])
+        local y = layoutItems(filterPanel, flowItems, -7)
+        activeText:ClearAllPoints()
+        activeText:SetPoint("TOPLEFT", 12, y - 30)
+        activeText:SetWidth(available - 24)
+        local activeHeight = activeText:GetText() ~= "" and (math.ceil(activeText:GetStringHeight()) + 4) or 0
+        activeText:SetShown(activeHeight > 0)
+        filterPanel:SetHeight(-y + 26 + 7 + activeHeight)
+        advanced:SetShown(advancedShown)
+        if advancedShown then
+            local advancedY = layoutItems(advanced, advancedItems, -7)
+            statsHint:ClearAllPoints()
+            statsHint:SetPoint("TOPLEFT", 12, advancedY - 30)
+            statsHint:SetWidth(available - 24)
+            statsHint:SetText(addon.itemStats and addon.itemStats.available() and
+                L["Attributes come from the item data of the client; items whose data is not loaded yet are hidden while attribute filters are set. Weapon speed and special effects are not compared."]
+                or L["This client provides no structured item attributes; attribute filters are unavailable."])
+            advanced:SetHeight(-advancedY + 26 + 7 + math.ceil(statsHint:GetStringHeight()) + 6)
+            for _, item in ipairs(advancedItems) do if item.sync then item.sync() end end
         end
-        filterPanel:SetHeight(-y + 26 + 7)
     end
     filterPanel:SetScript("OnSizeChanged", flow)
     view.flowFilters = flow
@@ -815,15 +1078,20 @@ function finder.create(parent, ctx)
     detail:SetPoint("BOTTOMRIGHT")
     detail:SetHeight(238)
     local resultPanel = ctx.panel(view)
-    resultPanel:SetPoint("TOPLEFT", filterPanel, "BOTTOMLEFT", 0, -7)
-    resultPanel:SetPoint("TOPRIGHT", filterPanel, "BOTTOMRIGHT", 0, -7)
-    resultPanel:SetPoint("BOTTOMRIGHT", view, "BOTTOMRIGHT")
+    local function anchorResults()
+        local above = advanced:IsShown() and advanced or filterPanel
+        resultPanel:ClearAllPoints()
+        resultPanel:SetPoint("TOPLEFT", above, "BOTTOMLEFT", 0, -7)
+        resultPanel:SetPoint("TOPRIGHT", above, "BOTTOMRIGHT", 0, -7)
+        resultPanel:SetPoint("BOTTOMRIGHT", view, "BOTTOMRIGHT", 0, detail:IsShown() and 245 or 0)
+    end
     local COLUMNS = {
         { key = "profession", title = L["Profession"], width = 112 },
         { key = "level", title = L["Level"], width = 42, right = true },
         { key = "skill", title = L["Skill"], width = 54, right = true },
         { key = "crafters", title = L["Crafters"], width = 66, right = true },
         { key = "online", title = L["Online"], width = 52, right = true },
+        { key = "value", title = L["Value"], width = 48, right = true },
     }
     local ACTION = 0
     local header = CreateFrame("Frame", nil, resultPanel)
@@ -915,16 +1183,22 @@ function finder.create(parent, ctx)
         row.icon:SetTexture(group.icon or 134400)
         row.name:SetText(group.name)
         row.name:SetTextColor(qualityColor(group.quality))
+        local value = finder.comparisonValue(group, filters)
         local values = {
             ctx.professionName(group.professionID),
             group.level and tostring(group.level) or "–",
             group.skill and tostring(group.skill) or "–",
             tostring(group.crafterCount),
             tostring(group.onlineCount),
+            value and ((value > 0 and "+" or "") .. finder.number(value)) or "–",
         }
         for column, label in ipairs(row.columns) do
             label:SetText(values[column])
             label:SetTextColor(.92, .88, .80)
+        end
+        if value and value ~= 0 then
+            local tint = value > 0 and GREEN or { 1, .4, .35 }
+            row.columns[6]:SetTextColor(tint[1], tint[2], tint[3])
         end
         if group.onlineCount > 0 then row.columns[5]:SetTextColor(GREEN[1], GREEN[2], GREEN[3])
         else row.columns[5]:SetTextColor(MUTED[1], MUTED[2], MUTED[3]) end
@@ -958,9 +1232,24 @@ function finder.create(parent, ctx)
     facts:SetWidth(284)
     facts:SetWordWrap(true)
     facts:SetSpacing(2)
+    local compareText = text(detail, "GameFontHighlightSmall")
+    compareText:SetPoint("TOPLEFT", facts, "BOTTOMLEFT", 0, -5)
+    compareText:SetWidth(284)
+    compareText:SetWordWrap(true)
+    compareText:SetSpacing(2)
     local materialsTitle = text(detail, "GameFontNormalSmall")
-    materialsTitle:SetPoint("TOPLEFT", 12, -104)
+    materialsTitle:SetPoint("TOPLEFT", compareText, "BOTTOMLEFT", 0, -6)
     materialsTitle:SetText(L["Recipes and materials"])
+    local postButton
+    if opts.picker then
+        postButton = ctx.button(detail, L["Post on the bulletin board"],
+            math.ceil(textWidth(L["Post on the bulletin board"], GameFontNormal)) + 30, 0, 0, function()
+                local group = detail.group
+                if group and ctx.public then ctx.public(group.recipes[1], group.professionID) end
+            end)
+        postButton:ClearAllPoints()
+        postButton:SetPoint("BOTTOMLEFT", 10, 8)
+    end
     local materials = virtualList(detail, 17, function(content)
         local row = CreateFrame("Button", nil, content)
         row.label = text(row, "GameFontHighlightSmall")
@@ -979,8 +1268,8 @@ function finder.create(parent, ctx)
         if entry.recipe then row.label:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
         else row.label:SetTextColor(.92, .88, .80) end
     end)
-    materials.scroll:SetPoint("TOPLEFT", 10, -120)
-    materials.scroll:SetPoint("BOTTOMLEFT", 10, 10)
+    materials.scroll:SetPoint("TOPLEFT", materialsTitle, "BOTTOMLEFT", -2, -3)
+    materials.scroll:SetPoint("BOTTOMLEFT", 10, postButton and 38 or 10)
     materials.scroll:SetWidth(266)
 
     local divider = detail:CreateTexture(nil, "ARTWORK")
@@ -1110,9 +1399,11 @@ function finder.create(parent, ctx)
 
     local function showDetail(group)
         detail:SetShown(group ~= nil)
-        resultPanel:SetPoint("BOTTOMRIGHT", view, "BOTTOMRIGHT", 0, group and 245 or 0)
+        anchorResults()
         if not group then return end
         hero.group = group
+        detail.group = group
+        compareText:SetText(finder.comparisonText(group) or "")
         heroIcon:SetTexture(group.icon or 134400)
         heroName:SetText(group.name)
         heroName:SetTextColor(qualityColor(group.quality))
@@ -1142,7 +1433,11 @@ function finder.create(parent, ctx)
             materialsTitle:SetText(L["Recipes and materials"])
         end
         materials.set(entries, true)
-        crafterTitle:SetText(L["Crafters: %d  ·  online: %d"]:format(group.crafterCount, group.onlineCount))
+        if group.crafterCount == 0 then
+            crafterTitle:SetText("|cffffc060" .. L["No known crafter"] .. "|r")
+        else
+            crafterTitle:SetText(L["Crafters: %d  ·  online: %d"]:format(group.crafterCount, group.onlineCount))
+        end
         crafterList.set(group.crafterList, true)
     end
 
@@ -1185,8 +1480,9 @@ function finder.create(parent, ctx)
 
     function view.refresh(resetScroll)
         if not view:IsShown() then return end
-        local counts, unknown, total
-        results, counts, unknown, total = finder.query(ctx, filters, sortKey, descending)
+        local counts, unknown, total, info
+        results, counts, unknown, total, info = finder.query(ctx, filters, sortKey, descending)
+        activeText:SetText(finder.activeFilters(filters, ctx))
         view.flowFilters()
         tree.set(treeNodes(counts), false)
         for key, control in pairs(headerButtons) do
@@ -1216,11 +1512,24 @@ function finder.create(parent, ctx)
         if without > 0 then
             status = status .. "  ·  " .. L["%d without synced data (not counted as unable to craft)"]:format(without)
         end
+        if info.pending > 0 then
+            status = L["Loading item data …"] .. "  ·  " .. status
+        end
+        if info.unresolved > 0 and not filters.showUnresolved then
+            status = status .. "  ·  " .. L["%d recipe records incomplete (hidden)"]:format(info.unresolved)
+        end
+        if info.noStats > 0 then
+            status = status .. "  ·  " .. L["%d without loaded attributes"]:format(info.noStats)
+        end
+        if info.bindUnknown > 0 then
+            status = status .. "  ·  " .. L["%d still checking whether they can be handed over"]:format(info.bindUnknown)
+        end
         statusText:SetText(status)
     end
 
     function view.reset()
-        filters = { category = {} }
+        filters = freshFilters()
+        for _, row in ipairs(attributeRows) do row.id = nil; row.box:SetText(""); row.shown = row == attributeRows[1] end
         search:SetText("")
         for _, box in pairs(numbers) do box:SetText("") end
         selectedKey = nil
@@ -1231,5 +1540,123 @@ function finder.create(parent, ctx)
     view:SetScript("OnShow", function()
         for _, control in ipairs(dropdowns) do control.Sync() end
     end)
+    view.search = search
+    view.tree = treePanel
+    view.filterPanel = filterPanel
+    view.results = resultPanel
     return view
 end
+
+-- Trade status of a recipe group: TRADEABLE, NON_TRADEABLE, UNKNOWN or SERVICE. The crafted
+-- item decides, never the recipe item; without an output only enchantments count as service.
+function finder.tradeStatusOf(itemID, top)
+    if itemID then
+        if not addon.itemStats then return "UNKNOWN", "no item stats module" end
+        return addon.itemStats.bindStatus(itemID)
+    end
+    if top == "enchant" then return "SERVICE", "enchantment without crafted item" end
+    return "UNKNOWN", "no crafted item known"
+end
+
+function finder.groupTradeStatus(group, ctx)
+    if not group.trade then
+        group.trade, group.tradeReason = finder.tradeStatusOf(group.itemID, group.top)
+        if group.trade == "UNKNOWN" and group.itemID and ctx and ctx.requestItem then ctx.requestItem(group.itemID) end
+    end
+    local status = group.trade
+    if status == "UNKNOWN" then group.trade = nil end
+    return status, group.tradeReason
+end
+
+-- Same decision for a single recipe (order dialog, incoming orders).
+function finder.recipeTradeStatus(recipe, professionID, ctx)
+    local meta = describeRecipe(recipe, professionID, ctx)
+    return finder.tradeStatusOf(meta.itemID, meta.top), meta
+end
+
+function finder.diagnose(recipe, professionID, ctx)
+    local meta = describeRecipe(recipe, professionID, ctx)
+    local getInfo = C_Item and C_Item.GetItemInfo or _G.GetItemInfo
+    local bindType = meta.itemID and getInfo and select(14, getInfo(meta.itemID))
+    local status, reason = finder.tradeStatusOf(meta.itemID, meta.top)
+    return ("recipe/spell %d · output item %s · category %s · bindType %s · %s (%s)"):format(recipe,
+        tostring(meta.itemID), tostring(meta.top), tostring(bindType), status, tostring(reason))
+end
+
+function finder.number(value)
+    if value % 1 == 0 then return tostring(value) end
+    return ("%.1f"):format(value)
+end
+
+-- Value column: weighted score difference, else the sum of the selected attribute
+-- differences; nil when nothing can be compared.
+function finder.comparisonValue(group, filters)
+    local stats = addon.itemStats
+    if not stats or not group.itemID or not stats.slots[group.equipLoc or ""] then return nil end
+    local comparison = group.comparison or stats.compare(group.itemID, group.equipLoc)
+    group.comparison = comparison
+    if not comparison then return nil end
+    if comparison.score then return comparison.score end
+    if filters and filters.attrs and #filters.attrs > 0 then
+        local total = 0
+        for _, rule in ipairs(filters.attrs) do total = total + (comparison.diff[rule.id] or 0) end
+        return total
+    end
+    return nil
+end
+
+function finder.comparisonText(group)
+    local stats = addon.itemStats
+    if not stats or not group.itemID or not stats.slots[group.equipLoc or ""] then return nil end
+    local comparison = stats.compare(group.itemID, group.equipLoc)
+    if not comparison then return L["Comparison: item data not loaded yet."] end
+    local parts = {}
+    for _, attribute in ipairs(stats.attributes) do
+        local diff = comparison.diff[attribute.id]
+        if diff and diff ~= 0 then
+            parts[#parts + 1] = ("%s %s%s|r"):format(stats.label(attribute.id), diff > 0 and "|cff59dc59+" or "|cffff6655",
+                finder.number(diff))
+        end
+    end
+    local head = comparison.empty and L["Compared with an empty slot:"] or L["Compared with equipped:"]
+    if #parts == 0 then return head .. " " .. L["no attribute difference"] end
+    local line = head .. " " .. table.concat(parts, " · ")
+    if comparison.score then line = line .. "\n" .. L["Weighted score: %s"]:format((comparison.score > 0 and "+" or "") .. finder.number(comparison.score)) end
+    return line
+end
+
+function finder.activeFilters(filters, ctx)
+    local parts = {}
+    local category = filters.category or {}
+    if category.top then parts[#parts + 1] = finder.label(category.top, category.sub, category.slot) end
+    if filters.profession then parts[#parts + 1] = ctx.professionName(filters.profession) end
+    if filters.armorClass then parts[#parts + 1] = finder.label("armor", filters.armorClass) end
+    if filters.slot then parts[#parts + 1] = slotLabel(filters.slot) end
+    if filters.quality then parts[#parts + 1] = _G["ITEM_QUALITY" .. filters.quality .. "_DESC"] or tostring(filters.quality) end
+    if filters.levelMin or filters.levelMax then
+        parts[#parts + 1] = L["Level"] .. " " .. (filters.levelMin or "1") .. "–" .. (filters.levelMax or "60")
+    end
+    if filters.usable then parts[#parts + 1] = L["Usable by my character"] end
+    if filters.levelMode == "now" then parts[#parts + 1] = L["Usable at my current level"] end
+    for _, rule in ipairs(filters.attrs or {}) do
+        parts[#parts + 1] = addon.itemStats.label(rule.id) .. (rule.min and (" " .. L["at least"] .. " " .. rule.min) or "")
+    end
+    if filters.better == "ilvl" then parts[#parts + 1] = L["Higher item level than equipped"]
+    elseif filters.better == "attrs" then parts[#parts + 1] = L["Improves the selected attributes"]
+    elseif filters.better == "score" then parts[#parts + 1] = L["Higher weighted score"] end
+    if filters.online then parts[#parts + 1] = filters.online == "online" and L["Crafter online"] or L["Only offline crafters"] end
+    if #parts == 0 then return "" end
+    return L["Active filters: "] .. table.concat(parts, " · ")
+end
+
+-- Shared building blocks for the crafting marketplace (MarketUI.lua).
+function finder.recipeCategory(recipe, professionID, ctx)
+    return describeRecipe(recipe, professionID, ctx).top
+end
+function finder.topCategories()
+    local list = {}
+    for _, node in ipairs(TREE) do list[#list + 1] = node[1] end
+    return list
+end
+finder.widgets = { virtualList = virtualList, text = text, dropdown = dropdown, numberBox = numberBox,
+    tooltipFor = tooltipFor, qualityColor = qualityColor }

@@ -1,4 +1,4 @@
-ForeverGuild 0.9.61 · WoW Forever 1.60.1
+ForeverGuild 0.9.65 · WoW Forever 1.60.1
 
 Installation
 1. Den Ordner ForeverGuild aus der ZIP nach Interface/AddOns kopieren.
@@ -239,6 +239,46 @@ seltener nach (bis alle 10 Minuten), und „Spieler nicht online“-Meldungen
 dafür werden ausgeblendet. Lange stumme Partnerschaften gelten als inaktiv.
 Alle Gildenmitglieder sehen die Partnergilden. Bei einem anderen Realm
 weist das Fenster darauf hin, dass dies nur bei verbundenen Realms klappt.
+
+Neu in 0.9.65
+Beim Aufheben gebundene Gegenstände tauchen in der Auftragssuche nicht mehr
+auf und können nicht bestellt werden; geprüft wird der hergestellte
+Gegenstand. /fguild bindcheck <Rezept-ID> zeigt die Prüfung an. Die
+Einführungstour zeigt jetzt nur das jeweils benötigte Fenster, fängt Klicks
+vollständig ab, hat größere Infofenster, eine eigene Station „Gruppe
+suchen“ und neue Texte. Neue Symbole für Schwarzes Brett und Gildenbank.
+
+Neu in 0.9.64
+Die Einführungstour wurde überarbeitet: blickdichte Infofenster im Stil der
+Blizzard-Tutorials, die neben dem jeweils erklärten Bereich erscheinen,
+hervorgehobene echte Bedienelemente mit leicht abgedunkeltem Rest,
+Fortschrittsbalken und getrennte Schaltflächenreihen.
+
+Neu in 0.9.63
+Alte Handwerksaufträge lassen sich wieder verwalten: zurückziehen, erneut
+erstellen, archivieren und lokal entfernen. Entfernte Aufträge kommen durch
+spätere Synchronisation nicht zurück. Unter Einstellungen → Datenverwaltung
+lassen sich abgeschlossene, stornierte und abgelaufene Aufträge gesammelt
+bereinigen. Die Rezeptauswahl für Aufträge nutzt jetzt die Gildenberufe-Suche
+mit Kategorien, Rüstungsklasse, Attributfiltern (z. B. „Kette Armschienen
+Stärke“ oder „lvl>=55 stärke>=10“) und Vergleich mit der getragenen
+Ausrüstung. Neu sind außerdem das Einstellungsfenster mit Suche, eine
+Einführungstour und eigene Symbole für Gildenbank und Schwarzes Brett.
+
+Neu in 0.9.62
+Handwerksmarktplatz: Direkte Aufträge und Aufträge am Schwarzen Brett nutzen
+jetzt dieselbe Auftragsverwaltung. Ein angenommener Brett-Auftrag erscheint
+automatisch unter Handwerksaufträge. Der neue Auftragsdialog fragt Anzahl,
+Materialien pro Gegenstand (was du stellst, was der Handwerker stellt),
+Trinkgeld oder feste Vergütung in Gold/Silber/Kupfer (gesamt oder pro
+Herstellung), Materialkostenerstattung, Übergabeart, Nachricht, Laufzeit und
+Fertigstellungsfrist ab. Die Auftragsverwaltung hat die Registerkarten
+Eingegangen, Angenommen, Meine Bestellungen, Bereit zur Übergabe und Verlauf
+mit Fortschritt, Übergaben, Zahlungsstatus und Auftragsverlauf. Änderungen
+nach der Annahme und Stornierungen brauchen die Zustimmung der anderen Seite.
+Zahlungen werden nur dokumentiert; ForeverGuild verwahrt kein Gold.
+Benachrichtigungen (Pop-up, Chat, Ton, Zähler, Verlauf) lassen sich unter
+Einstellungen → Handwerksmarktplatz pro Art einstellen.
 
 Neu in 0.9.61
 Gildenberufe → „Nach Rezepten“ (Standard): gildenweite Rezeptsuche wie im

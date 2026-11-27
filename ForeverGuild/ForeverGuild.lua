@@ -5,7 +5,7 @@ local bankScan, startBankScan, scanVisibleBank, requestBankSnapshot
 local lastBankRequest, lastBankReply = -60, -60
 local showOrderMenu, showOrderDialog, orderMenu, orderDialog, orderChannel
 local orderNotice, updateOrderNotice
-local addonVersion = "0.9.61"
+local addonVersion = "0.9.65"
 local settingsWindow, minimapIcon, guildShortcut
 local updateGuildShortcut
 local prefix, rolePrefix = "ForeverGuild1", "ForeverGuildRole"
@@ -1674,6 +1674,20 @@ local function button(parent, text, width, x, y, action)
 end
 
 local addonIcon = "Interface\\AddOns\\ForeverGuild\\Art\\ForeverGuildEmblem"
+-- Shared module icons (navigation, help, tour).
+addon.moduleIcons = {
+    roster = "Interface\\AddOns\\ForeverGuild\\Art\\TabRoster",
+    professions = "Interface\\AddOns\\ForeverGuild\\Art\\TabProfessions",
+    orders = "Interface\\AddOns\\ForeverGuild\\Art\\TabOrders",
+    board = "Interface\\AddOns\\ForeverGuild\\Art\\BulletinBoard",
+    groups = "Interface\\AddOns\\ForeverGuild\\Art\\TabRoster",
+    bank = "Interface\\AddOns\\ForeverGuild\\Art\\GuildBank",
+    admin = "Interface\\AddOns\\ForeverGuild\\Art\\TabAdministration",
+    help = "Interface\\AddOns\\ForeverGuild\\Art\\TabHelp",
+    log = "Interface\\AddOns\\ForeverGuild\\Art\\TabLog",
+    settings = "Interface\\AddOns\\ForeverGuild\\Art\\SettingsGear",
+    notify = "Interface\\Icons\\INV_Letter_15",
+}
 local exportFrame
 
 local function showDiagnostics()
@@ -1719,7 +1733,7 @@ local function iconTooltip(control, title, detail)
     control:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:SetText(title)
-        if detail then GameTooltip:AddLine(detail, 1, 1, 1) end
+        if detail then GameTooltip:AddLine(detail, 1, 1, 1, true) end
         GameTooltip:Show()
     end)
     control:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1837,7 +1851,7 @@ local function talentCard(parent, width, x, y, action, wide)
     return card
 end
 
-local function sideTab(parent, index, icon, title, action)
+local function sideTab(parent, index, icon, title, action, description)
     local ok, tab = pcall(CreateFrame, "Frame", nil, parent, "LargeSideTabButtonTemplate")
     if not ok then
         tab = panel(parent)
@@ -1868,17 +1882,19 @@ local function sideTab(parent, index, icon, title, action)
     local click = CreateFrame("Button", nil, tab)
     click:SetAllPoints()
     click:SetScript("OnClick", action)
-    iconTooltip(click, title)
+    iconTooltip(click, title, description)
     return tab
 end
 
 local function buildRosterView()
     local root = panel(window, 0)
     window.rosterView = root
+    -- Tour target: the member list.
     root:SetPoint("TOPLEFT", 14, -46)
     root:SetPoint("BOTTOMRIGHT", -14, 13)
     pageBackdrop(root, "GuildHall", 1.5, .85)
     local members = contrastPanel(root)
+    window.rosterMembers = members
     members:SetPoint("TOPLEFT", 9, -9)
     members:SetPoint("BOTTOMLEFT", 9, 9)
     members:SetPoint("TOPRIGHT", root, "TOPRIGHT", -353, -9)
@@ -2208,6 +2224,10 @@ local function showSetup()
             end)
                 dialog.specs[index] = control
         end
+        -- Tour target: role and specialization choice.
+        dialog.choiceArea = CreateFrame("Frame", nil, body)
+        dialog.choiceArea:SetPoint("TOPLEFT", 6, -56)
+        dialog.choiceArea:SetPoint("BOTTOMRIGHT", body, "TOPRIGHT", -6, -258)
         dialog.professionArea = CreateFrame("Frame", nil, body)
         dialog.professionArea:SetPoint("TOPLEFT", 0, -331)
         dialog.professionArea:SetPoint("BOTTOMRIGHT", 0, 45)
@@ -2259,155 +2279,190 @@ local function maybeShowSetup()
     ForeverGuildSetupShown = true
 end
 
-local function showSettings()
+local function showSettings(pageId)
     if uiInCombat() then return end
-    if settingsWindow then
-        settingsWindow:SetShown(not settingsWindow:IsShown())
-        return
-    end
-    local dialog = CreateFrame("Frame", "ForeverGuildSettingsWindow", UIParent, "PortraitFrameTemplate")
-    settingsWindow = dialog
-    dialog:SetSize(690, 397)
-    dialog:SetPoint("CENTER")
-    dialog:SetFrameStrata("FULLSCREEN_DIALOG")
-    dialog:SetClampedToScreen(true)
-    dialog:SetMovable(true)
-    dialog:EnableMouse(true)
-    dialog:RegisterForDrag("LeftButton")
-    dialog:SetScript("OnDragStart", dialog.StartMoving)
-    dialog:SetScript("OnDragStop", dialog.StopMovingOrSizing)
-    dialog:SetTitle(L["ForeverGuild · Settings"])
-    dialog:SetPortraitToAsset(addonIcon)
-    table.insert(UISpecialFrames, "ForeverGuildSettingsWindow")
-
-    local sidebar = panel(dialog)
-    sidebar:SetPoint("TOPLEFT", 12, -52)
-    sidebar:SetPoint("BOTTOMLEFT", 12, 13)
-    sidebar:SetWidth(154)
-    local content = panel(dialog)
-    content:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 10, 0)
-    content:SetPoint("BOTTOMRIGHT", -13, 13)
-    heading(sidebar, "v" .. addonVersion, 15, -306)
-
-    local pages, navigation = {}, {}
-    local function page(title)
-        local index = #pages + 1
-        local section = CreateFrame("Frame", nil, content)
-        section:SetAllPoints()
-        pages[index] = section
-        heading(section, title, 17, -16)
-        local tab = button(sidebar, title, 134, 10, -13 - (index - 1) * 34, function()
-            for i, item in ipairs(pages) do
-                item:SetShown(i == index)
-                navigation[i]:SetEnabled(i ~= index)
-            end
-        end)
-        navigation[index] = tab
-        section:SetShown(index == 1)
-        tab:SetEnabled(index ~= 1)
-        return section
-    end
-    local function paragraph(parent, message, y)
-        local label = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        label:SetPoint("TOPLEFT", 18, y)
-        label:SetPoint("RIGHT", -18, 0)
-        label:SetJustifyH("LEFT")
-        label:SetText(message)
-        return label
-    end
-    local function checkbox(parent, title, detail, y, enabled, update)
-        local check = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
-        check:SetPoint("TOPLEFT", 15, y)
-        heading(parent, title, 45, y - 9)
-        paragraph(parent, detail, y - 31)
-        check:SetChecked(enabled)
-        check:SetScript("OnClick", function(self) update(self:GetChecked() and true or false) end)
-        return check
-    end
+    local S = addon.settingsUI
     local function setPreference(key, value)
         ForeverGuildSettings = ForeverGuildSettings or {}
         ForeverGuildSettings[key] = value
     end
-
-    local general = page(L["General"])
-    checkbox(general, L["Show minimap icon"],
-        L["Left-click opens ForeverGuild. Right-click opens the diagnostic export."],
-        -47, preference("minimap"), function(value)
-            setPreference("minimap", value)
-            if minimapIcon then minimapIcon:SetShown(value) end
-        end)
-    checkbox(general, L["First-login setup prompt"],
-        L["Shown once for a character without roles or a specialization."],
-        -108, preference("setupPrompt"), function(value) setPreference("setupPrompt", value) end)
-    checkbox(general, L["Guild button opens ForeverGuild"],
-        L["Opens ForeverGuild from the guild icon on the WoW menu bar."],
-        -169, ForeverGuildSettings and ForeverGuildSettings.guildShortcut == true, function(value)
-            setPreference("guildShortcut", value)
-            updateGuildShortcut()
-        end)
-    button(general, L["Character setup"], 184, 17, -238, function()
-        dialog:Hide()
-        showSetup()
-    end)
-    paragraph(general, L["Commands: /fguild · /fguild setup · /fguild settings"], -280)
-
-    local sync = page(L["Guild sync"])
-    checkbox(sync, L["Periodic guild sync"],
-        L["Requests updated guild data about every five minutes."],
-        -47, preference("periodicSync"), function(value) setPreference("periodicSync", value) end)
-    local scan = checkbox(sync, L["Open professions automatically"],
-        L["Optional per character. WoW may block automatic opening."],
-        -108, ForeverGuildBackgroundScan == true, function(value)
-            ForeverGuildBackgroundScan = value
-            if value then queueBackgroundScan(.5)
-            elseif backgroundScan then backgroundScan.ids = {} end
-        end)
-    paragraph(sync, L["Opening a profession normally captures its recipes. Received profiles remain available locally."], -180)
-    local status = paragraph(sync, "", -268)
-    button(sync, L["Sync now"], 156, 17, -224, function()
-        local requested = requestSync()
-        if database and registered then
-            status:SetText(requested and (L["Guild sync requested."])
-                or (L["A sync was requested less than 20 seconds ago."]))
-        else
-            status:SetText(L["The guild channel is currently unavailable."])
+    -- Registered once; all keys are the existing ones, so saved settings stay as they are.
+    if not settingsWindow then
+        settingsWindow = true
+        local function check(page, key, label, desc, scope, extra)
+            local entry = { page = page, kind = "check", label = label, desc = desc, scope = scope or "account",
+                get = function() return preference(key) end, set = function(value) setPreference(key, value) end, default = true }
+            for field, value in pairs(extra or {}) do entry[field] = value end
+            S.add(entry)
         end
-    end)
+        S.page("ui", "general", "User interface")
+        check("ui", "minimap", L["Show minimap icon"], L["Left-click opens ForeverGuild. Right-click opens the diagnostic export."],
+            "account", { set = function(value)
+                setPreference("minimap", value)
+                if minimapIcon then minimapIcon:SetShown(value) end
+            end })
+        local tabs = { { "professions", L["Guild professions"] }, { "roster", L["Guild roster"] },
+            { "orders", L["Crafting orders"] }, { "board", L["Bulletin board"] } }
+        if guildBank then tabs[#tabs + 1] = { "bank", L["Guild bank"] } end
+        S.add({ page = "ui", kind = "choice", label = L["Default view when opening"], scope = "account", default = "last",
+            desc = L["Which page ForeverGuild shows when the window opens."],
+            options = function()
+                local options = { { "last", L["Last used page"] } }
+                for _, tab in ipairs(tabs) do options[#options + 1] = tab end
+                return options
+            end, get = function() return ForeverGuildSettings and ForeverGuildSettings.startTab or "last" end,
+            set = function(value) setPreference("startTab", value ~= "last" and value or nil) end })
+        S.add({ page = "ui", kind = "choice", label = L["Window scale"], scope = "account", default = 100,
+            desc = L["Size of the ForeverGuild main window."],
+            options = function() return { { 80, "80 %" }, { 90, "90 %" }, { 100, "100 %" }, { 110, "110 %" }, { 120, "120 %" } } end,
+            get = function() return ForeverGuildSettings and ForeverGuildSettings.windowScale or 100 end,
+            set = function(value)
+                setPreference("windowScale", value ~= 100 and value or nil)
+                if window then window:SetScale(value / 100) end
+            end })
 
-    local bankSettings = page(L["Guild bank"])
-    checkbox(bankSettings, L["Request guild snapshot automatically"],
-        L["Requests the latest shared stock when ForeverGuild or the bank tab opens."],
-        -47, preference("bankAutoRequest"), function(value) setPreference("bankAutoRequest", value) end)
-    checkbox(bankSettings, L["Share bank stock automatically"],
-        L["Shares scanned tabs and the balance with the entire guild."],
-        -120, preference("bankShare"), function(value)
-            setPreference("bankShare", value)
-            if guildBank then guildBank.beginScan() end
-        end)
-    paragraph(bankSettings, L["Sharing includes tabs that only certain ranks can view directly in WoW."], -193)
-    button(bankSettings, L["Request guild snapshot"], 183, 17, -243, function()
-        requestBankSnapshot()
-    end)
+        S.page("character", "general", "Character profile")
+        S.add({ page = "character", kind = "button", label = L["Character setup"], buttonLabel = L["Open character setup"],
+            scope = "character", desc = L["Roles and specialization of this character. Guild masters and officers can edit them for other members."],
+            action = function() showSetup() end })
+        check("character", "setupPrompt", L["First-login setup prompt"],
+            L["Shown once for a character without roles or a specialization."])
 
-    local info = page(L["Info and diagnostics"])
-    local state = paragraph(info, "", -48)
-    paragraph(info, L["The diagnostic log retains up to 400 events per character. Copy the export when troubleshooting."], -121)
-    button(info, L["Export diagnostics"], 177, 17, -174, function()
-        dialog:Hide()
-        showDiagnostics()
-    end)
-    paragraph(info, L["Roles and specialization belong to each character. Guild masters and officers can edit them for other members."], -226)
-    local function updateInfo()
-        local profiles = 0
-        for _ in pairs(database or {}) do profiles = profiles + 1 end
-        scan:SetChecked(ForeverGuildBackgroundScan == true)
-        state:SetText((L["Version %s\nReceived profession profiles: %d\nDiagnostic entries: %d"]):format(
-            addonVersion, profiles, #(ForeverGuildDiagnostics or {})))
+        S.page("behavior", "general", "Behavior")
+        check("behavior", "guildShortcut", L["Guild button opens ForeverGuild"],
+            L["Opens ForeverGuild from the guild icon on the WoW menu bar."], "account", {
+                get = function() return ForeverGuildSettings and ForeverGuildSettings.guildShortcut == true end,
+                set = function(value) setPreference("guildShortcut", value); updateGuildShortcut() end, default = false })
+
+        S.page("professions", "guild", "Guild professions")
+        S.add({ page = "professions", kind = "check", label = L["Open professions automatically"], scope = "character",
+            desc = L["Optional per character. WoW may block automatic opening."], default = false,
+            get = function() return ForeverGuildBackgroundScan == true end,
+            set = function(value)
+                ForeverGuildBackgroundScan = value
+                if value then queueBackgroundScan(.5) elseif backgroundScan then backgroundScan.ids = {} end
+            end })
+        S.add({ page = "professions", kind = "choice", label = L["Default view of guild professions"], scope = "account",
+            default = "recipes", desc = L["By recipe: guild-wide search. By crafter: the previous overview."],
+            options = function() return { { "recipes", L["By recipe"] }, { "crafters", L["By crafter"] } } end,
+            get = function() return ForeverGuildSettings and ForeverGuildSettings.professionView or "recipes" end,
+            set = function(value) setPreference("professionView", value) end })
+        S.add({ page = "professions", kind = "custom", label = L["Attribute weights"], scope = "account",
+            desc = L["Your own weights for the “Value” column and the comparison filter. Example values are no proven best-in-slot weights; set and fill only what fits your character."],
+            info = L["Score = sum of attribute × weight. Weapon speed, set bonuses, special effects and enchantments are not included, so the score is a decision aid, not a damage simulation."],
+            keywords = "gewichtung weights score wertung",
+            build = function(container, entry)
+                entry.boxes = {}
+                for index, attribute in ipairs(addon.itemStats.attributes) do
+                    local column, row = (index - 1) % 3, math.floor((index - 1) / 3)
+                    local label = container:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                    label:SetPoint("TOPLEFT", column * 170, -row * 24 - 4)
+                    label:SetWidth(108)
+                    label:SetJustifyH("LEFT")
+                    label:SetText(addon.itemStats.label(attribute.id))
+                    local box = CreateFrame("EditBox", nil, container, "InputBoxTemplate")
+                    box:SetSize(40, 18)
+                    box:SetPoint("TOPLEFT", column * 170 + 114, -row * 24)
+                    box:SetAutoFocus(false)
+                    box:SetMaxLetters(5)
+                    box:SetScript("OnEscapePressed", box.ClearFocus)
+                    box:SetScript("OnTextChanged", function(self, user)
+                        if not user then return end
+                        local value = tonumber((self:GetText():gsub(",", ".")))
+                        ForeverGuildSettings = ForeverGuildSettings or {}
+                        ForeverGuildSettings.statWeights = ForeverGuildSettings.statWeights or {}
+                        ForeverGuildSettings.statWeights[attribute.id] = value ~= 0 and value or nil
+                    end)
+                    entry.boxes[attribute.id] = box
+                end
+            end,
+            height = function() return math.ceil(#addon.itemStats.attributes / 3) * 24 + 4 end,
+            refresh = function(entry)
+                local weights = addon.itemStats.weights()
+                for id, box in pairs(entry.boxes) do
+                    if not box:HasFocus() then box:SetText(weights[id] and tostring(weights[id]) or "") end
+                end
+            end })
+
+        if guildBank then
+            S.page("bank", "guild", "Guild bank")
+            check("bank", "bankAutoRequest", L["Request guild snapshot automatically"],
+                L["Requests the latest shared stock when ForeverGuild or the bank tab opens."])
+            check("bank", "bankShare", L["Share bank stock automatically"],
+                L["Shares scanned tabs and the balance with the entire guild."], "account", {
+                    info = L["Sharing includes tabs that only certain ranks can view directly in WoW."],
+                    set = function(value)
+                        setPreference("bankShare", value)
+                        guildBank.beginScan()
+                    end })
+            S.add({ page = "bank", kind = "button", label = L["Request guild snapshot"], scope = "guild",
+                desc = L["Asks online members with ForeverGuild for their latest bank snapshot."],
+                action = function() requestBankSnapshot() end })
+        end
+        local market = addon.marketContext()
+        addon.marketUI.registerSettings(S, market)
+        S.page("partners", "guild", "Partner guilds")
+        S.add({ page = "partners", kind = "button", label = L["Guild management"], buttonLabel = L["Open partner guilds"],
+            scope = "master", desc = L["Connections with partner guilds are set up by the guild master under Guild management."],
+            enabled = function() return addon.partnerMaster() and true or false end,
+            action = function() addon.openMainTab("admin") end })
+
+        S.page("sync", "system", "Synchronization")
+        check("sync", "periodicSync", L["Periodic guild sync"], L["Requests updated guild data about every five minutes."])
+        S.add({ page = "sync", kind = "button", label = L["Sync now"], scope = "guild",
+            desc = L["Opening a profession normally captures its recipes. Received profiles remain available locally."],
+            action = function()
+                local requested = requestSync()
+                if database and registered then
+                    print("ForeverGuild · " .. (requested and L["Guild sync requested."] or L["A sync was requested less than 20 seconds ago."]))
+                else
+                    print("ForeverGuild · " .. L["The guild channel is currently unavailable."])
+                end
+            end })
+
+        S.page("diagnostics", "system", "Diagnostics")
+        S.add({ page = "diagnostics", kind = "custom", label = L["Info and diagnostics"], scope = "character",
+            desc = L["The diagnostic log retains up to 400 events per character. Copy the export when troubleshooting."],
+            build = function(container, entry)
+                entry.state = container:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                entry.state:SetPoint("TOPLEFT")
+                entry.state:SetJustifyH("LEFT")
+            end,
+            height = function() return 46 end,
+            refresh = function(entry)
+                local profiles = 0
+                for _ in pairs(database or {}) do profiles = profiles + 1 end
+                entry.state:SetText((L["Version %s\nReceived profession profiles: %d\nDiagnostic entries: %d"]):format(
+                    addonVersion, profiles, #(ForeverGuildDiagnostics or {})))
+            end })
+        S.add({ page = "diagnostics", kind = "button", label = L["Export diagnostics"], scope = "character",
+            action = function() showDiagnostics() end })
+
+        S.page("tour", "help", "Introduction tour")
+        S.add({ page = "tour", kind = "button", label = L["Introduction tour"], buttonLabel = L["Start tour"], scope = "account",
+            desc = L["A guided tour through the ForeverGuild window. It does not create orders or change guild data."],
+            action = function() addon.tour.start(addon.tourContext(), 1) end })
+        S.add({ page = "tour", kind = "button", label = L["Continue tour"], buttonLabel = L["Continue tour"], scope = "account",
+            desc = L["Continues where you left the tour."],
+            enabled = function() return addon.tour.resumable() end,
+            action = function() addon.tour.start(addon.tourContext()) end })
+        S.page("help", "help", "Help")
+        S.add({ page = "help", kind = "button", label = L["Help"], buttonLabel = L["Open help"], scope = "account",
+            desc = L["The in-game guide with all ForeverGuild pages."], action = function() addon.openMainTab("help") end })
+        S.add({ page = "help", kind = "text", label = L["Commands"], scope = "account",
+            desc = L["Commands: /fguild · /fguild setup · /fguild settings"] })
+        S.page("changelog", "help", "What's new")
+        S.add({ page = "changelog", kind = "text", label = "ForeverGuild " .. addonVersion, scope = "account",
+            desc = L["CHANGELOG_CURRENT"] })
     end
-    info:SetScript("OnShow", updateInfo)
-    dialog:SetScript("OnShow", updateInfo)
-    updateInfo()
+    S.toggle(addon.settingsContext(), pageId)
 end
+
+function addon.settingsContext()
+    return { inCombat = uiInCombat, icon = addonIcon, panel = panel, contrastPanel = contrastPanel, button = button,
+        version = addonVersion, market = addon.marketContext() }
+end
+addon.showSettings = function(pageId) showSettings(pageId) end
 
 local function resizeMainWindow()
     if not window then return end
@@ -3113,6 +3168,7 @@ local function pollOrders()
     if orderChannel and database and guildKey == guildIdentity() then
         addon.board.tick(guildKey, player, orderClock(),
             function(key) return roster[key] and roster[key].online end, broadcastOrder, sendOrderMessage)
+        addon.marketUI.tick(addon.marketContext())
         addon.boardNotes.tick(guildKey, player, orderClock(), addon.boardCan("news"), broadcastOrder)
         addon.boardRights.tick(guildKey, player, roster[player] and roster[player].rankIndex == 0, orderClock(),
             function(kind) return addon.boardMayModerate(kind) end, broadcastOrder)
@@ -3121,7 +3177,7 @@ local function pollOrders()
         addon.partnerTick()
         local master = roster[player] and roster[player].rankIndex == 0
         addon.boardRights.prune(guildKey, orderClock(), master, next(roster) and function(key) return roster[key] ~= nil end)
-        if activeTab == "board" or activeTab == "admin" then queueRefresh() end
+        if activeTab == "board" or activeTab == "admin" or activeTab == "orders" then queueRefresh() end
     end
     after(15 + math.random(0, 8), pollOrders)
 end
@@ -3161,7 +3217,10 @@ local function receiveOrderMessage(sender, message)
     local fromMaster = roster[key].rankIndex == 0
     if not destination and boardPacket:sub(1, 4) == "P:V:" then
         local version = boardPacket:match("^P:V:(%d+%.%d+%.%d+)$")
-        if version then addon.memberVersions[key] = version end
+        if version then
+            addon.memberVersions[key] = version
+            addon.market.noteVersion(guildKey, key, version)
+        end
         return
     end
     if not destination and boardPacket:sub(1, 4) == "P:S:" then
@@ -3206,12 +3265,14 @@ local function receiveOrderMessage(sender, message)
         return
     end
     if boardPacket:sub(1, 2) == "B:" then
-        if not destination and not addon.boardCan("order", key) then
-            local token = boardPacket:match("^B:S:(%d+%-%d+):") or boardPacket:match("^B:V:%d+:(%d+%-%d+):")
+        -- Direct orders (flag d) are private requests, not board posts: no posting right needed.
+        local direct = (boardPacket:match("^B:N:[^:]+:%d+:%d+:%d+:%u:(%a*):") or ""):find("d", 1, true)
+        if not destination and not direct and not addon.boardCan("order", key) then
+            local token = boardPacket:match("^B:[SNA]:(%d+%-%d+):") or boardPacket:match("^B:V:%d+:(%d+%-%d+):")
             if not token or not addon.board.records(guildKey)[key .. "/" .. token] then return end
         end
-        if addon.board.receive(guildKey, player, key, boardPacket, destination ~= nil, broadcastOrder)
-            and activeTab == "board" then queueRefresh() end
+        if addon.board.receive(guildKey, player, key, boardPacket, destination ~= nil, broadcastOrder, sendOrderMessage)
+            and (activeTab == "board" or activeTab == "orders") then queueRefresh() end
         return
     end
     local now = orderClock()
@@ -3295,205 +3356,8 @@ end
 
 showOrderDialog = function(recipe, owner, professionID, boardOnly)
     if uiInCombat() then return end
-    local crafters = {}
-    if boardOnly then
-        -- Open orders do not need a preselected crafter.
-    elseif owner and owner ~= player then
-        crafters[1] = owner
-    else
-        for name, profile in pairs(database or {}) do
-            local profession = profile.professions[professionID]
-            if name ~= player and roster[name] and profession and profession.recipes[recipe] then
-                crafters[#crafters + 1] = name
-            end
-        end
-        table.sort(crafters)
-    end
-    if not orderDialog then
-        local dialog = CreateFrame("Frame", "ForeverGuildOrderWindow", UIParent, "PortraitFrameTemplate")
-        orderDialog = dialog
-        dialog:SetSize(560, 488)
-        dialog:SetPoint("CENTER")
-        dialog:SetFrameStrata("FULLSCREEN_DIALOG")
-        dialog:SetClampedToScreen(true)
-        dialog:SetPortraitToAsset(addonIcon)
-        dialog:SetTitle(L["ForeverGuild · Crafting order"])
-        table.insert(UISpecialFrames, "ForeverGuildOrderWindow")
-        local body = panel(dialog)
-        body:SetPoint("TOPLEFT", 12, -45)
-        body:SetPoint("BOTTOMRIGHT", -12, 13)
-        pageBackdrop(body, "GuildAdministration", 1.5, .88)
-
-        local hero = contrastPanel(body)
-        hero:SetPoint("TOPLEFT", 10, -10)
-        hero:SetPoint("TOPRIGHT", -10, -10)
-        hero:SetHeight(66)
-        hero:EnableMouse(true)
-        hero:SetScript("OnEnter", recipeTooltip)
-        hero:SetScript("OnLeave", function() GameTooltip:Hide() end)
-        dialog.hero = hero
-        dialog.itemIcon = hero:CreateTexture(nil, "ARTWORK")
-        dialog.itemIcon:SetSize(42, 42)
-        dialog.itemIcon:SetPoint("LEFT", 12, 0)
-        dialog.itemIcon:SetTexCoord(.06, .94, .06, .94)
-        dialog.name = heading(hero, "", 65, -13)
-        dialog.name:SetFontObject(GameFontNormalLarge)
-        dialog.name:SetPoint("RIGHT", hero, "RIGHT", -12, 0)
-        dialog.name:SetJustifyH("LEFT")
-        dialog.name:SetWordWrap(false)
-        dialog.subtitle = heading(hero, "", 66, -40)
-
-        local fields = contrastPanel(body)
-        fields:SetPoint("TOPLEFT", hero, "BOTTOMLEFT", 0, -8)
-        fields:SetPoint("TOPRIGHT", hero, "BOTTOMRIGHT", 0, -8)
-        fields:SetHeight(60)
-        heading(fields, L["Crafter"], 12, -9)
-        heading(fields, L["Crafts"], 376, -9)
-        local quantity = CreateFrame("EditBox", nil, fields, "InputBoxTemplate")
-        quantity:SetSize(103, 23)
-        quantity:SetPoint("TOPLEFT", 382, -26)
-        quantity:SetAutoFocus(false)
-        quantity:SetNumeric(true)
-        quantity:SetMaxLetters(3)
-        quantity:SetScript("OnEscapePressed", quantity.ClearFocus)
-        dialog.quantity = quantity
-        local function update()
-            local count = tonumber(quantity:GetText())
-            local days = tonumber(dialog.boardDays:GetText())
-            local target = dialog.crafters[dialog.crafterIndex]
-            local member = target and roster[target]
-            dialog.targetName:SetText(dialog.boardOnly and (L["Open to the guild"])
-                or (member and member.displayName or target or (L["No crafter found"])))
-            local canSwitch = #dialog.crafters > 1
-            dialog.target:SetEnabled(canSwitch)
-            dialog.targetArrow:SetShown(canSwitch)
-            dialog.renderMaterials(materialRows(dialog.recipe, count and count >= 1 and count <= 200 and count or 1))
-            dialog.prepare:SetEnabled(database ~= nil and target ~= nil and count ~= nil and count >= 1 and count <= 200)
-            dialog.prepare:SetShown(not dialog.boardOnly)
-            dialog.post:SetEnabled(addon.boardCan("order") and database ~= nil and orderChannel and count ~= nil and count >= 1 and count <= 200
-                and days ~= nil and days >= 1 and days <= 30 and days % 1 == 0)
-            dialog.delivery = nil
-            dialog.status:SetText(dialog.boardOnly
-                and (L["The deadline applies while the order is open."])
-                or (L["If the crafter is offline, the order stays queued."]))
-        end
-        local crafter = panel(fields, .5, nil, .95)
-        crafter:SetPoint("TOPLEFT", 12, -27)
-        crafter:SetSize(342, 23)
-        dialog.targetName = heading(crafter, "", 8, -5)
-        dialog.targetName:SetPoint("RIGHT", crafter, "RIGHT", -25, 0)
-        dialog.targetName:SetWordWrap(false)
-        dialog.targetName:SetJustifyH("LEFT")
-        dialog.targetArrow = heading(crafter, "›", 0, 0)
-        dialog.targetArrow:ClearAllPoints()
-        dialog.targetArrow:SetPoint("RIGHT", -9, 0)
-        dialog.target = CreateFrame("Button", nil, crafter)
-        dialog.target:SetAllPoints()
-        local hover = dialog.target:CreateTexture(nil, "HIGHLIGHT")
-        hover:SetAllPoints()
-        hover:SetColorTexture(.82, .53, .20, .17)
-        iconTooltip(dialog.target, L["Switch to the next crafter"])
-        dialog.target:SetScript("OnClick", function()
-            if #dialog.crafters < 2 then return end
-            dialog.crafterIndex = dialog.crafterIndex % #dialog.crafters + 1
-            update()
-        end)
-
-        local materials = contrastPanel(body)
-        materials:SetPoint("TOPLEFT", fields, "BOTTOMLEFT", 0, -8)
-        materials:SetPoint("TOPRIGHT", fields, "BOTTOMRIGHT", 0, -8)
-        materials:SetPoint("BOTTOM", 0, 153)
-        heading(materials, L["Required materials"], 12, -10)
-        dialog.renderMaterials = list(materials, 9, -28, -30, 9, 477, 20, orderItemTooltip)
-        dialog.refreshMaterials = function()
-            local count = tonumber(quantity:GetText())
-            dialog.renderMaterials(materialRows(dialog.recipe, count and count >= 1 and count <= 200 and count or 1))
-        end
-        local footer = contrastPanel(body)
-        footer:SetPoint("TOPLEFT", materials, "BOTTOMLEFT", 0, -8)
-        footer:SetPoint("BOTTOMRIGHT", -10, 10)
-        dialog.status = orderText(footer, 12, -9, 12)
-        dialog.status:SetFontObject(GameFontHighlightSmall)
-        dialog.status:SetTextColor(.87, .77, .63)
-        dialog.prepare = button(footer, L["Send order"], 163, 0, 0, function()
-            local key = dialog.crafters[dialog.crafterIndex]
-            if not key or not database or guildKey ~= guildIdentity() then return end
-            local target = roster[key] and roster[key].target or key
-            local count = tonumber(quantity:GetText())
-            local _, token = orderBook.packet(dialog.recipe, count)
-            if not token then return end
-            dialog.delivery = { key = key, token = token }
-            orderBook.track(token, key, dialog.recipe, count, dialog.professionID, target, guildKey)
-            dialog.prepare:SetEnabled(false)
-            if orderChannel then
-                dialog.status:SetText(L["Order saved. Online guild clients can forward it to the crafter."])
-            else
-                dialog.status:SetText(L["Order saved. ForeverGuild is waiting for the addon channel."])
-            end
-            if activeTab == "orders" then queueRefresh() end
-            dispatchOrders()
-        end)
-        dialog.prepare:ClearAllPoints()
-        dialog.prepare:SetPoint("BOTTOMRIGHT", -10, 8)
-        local supplies = CreateFrame("CheckButton", nil, footer, "UICheckButtonTemplate")
-        supplies:SetPoint("TOPLEFT", 9, -29)
-        heading(footer, L["I provide the materials"], 39, -37)
-        local note = CreateFrame("EditBox", nil, footer, "InputBoxTemplate")
-        note:SetSize(217, 23)
-        note:SetPoint("TOPRIGHT", -12, -32)
-        note:SetMaxBytes(68)
-        note:SetAutoFocus(false)
-        note:SetScript("OnEscapePressed", note.ClearFocus)
-        local placeholder = heading(note, L["Optional board note"], 1, -5)
-        note:SetScript("OnTextChanged", function(box) placeholder:SetShown(box:GetText() == "") end)
-        heading(footer, L["Duration in days (1–30)"], 13, -70)
-        local days = CreateFrame("EditBox", nil, footer, "InputBoxTemplate")
-        days:SetSize(55, 23)
-        days:SetPoint("TOPLEFT", 176, -65)
-        days:SetNumeric(true)
-        days:SetMaxLetters(2)
-        days:SetAutoFocus(false)
-        days:SetScript("OnEscapePressed", days.ClearFocus)
-        days:SetScript("OnTextChanged", function()
-            if dialog.recipe then update() end
-        end)
-        dialog.boardDays = days
-        dialog.boardSupplies, dialog.boardNote = supplies, note
-        dialog.post = button(footer, L["Post to bulletin board"], 205, 12, 0, function()
-            if not database or guildKey ~= guildIdentity() or not orderChannel then return end
-            if not addon.boardCan("order") then return end
-            local order = addon.board.post(guildKey, player, dialog.recipe, tonumber(quantity:GetText()),
-                not not supplies:GetChecked(), note:GetText(), broadcastOrder, tonumber(days:GetText()))
-            if not order then return end
-            note:ClearFocus()
-            dialog:Hide()
-            activeTab = "board"
-            refresh()
-        end)
-        dialog.post:ClearAllPoints()
-        dialog.post:SetPoint("BOTTOMLEFT", 9, 8)
-        dialog.update = update
-        quantity:SetScript("OnTextChanged", function() if dialog.recipe then update() end end)
-    end
-    orderDialog.recipe, orderDialog.crafters, orderDialog.crafterIndex = recipe, crafters, 1
-    orderDialog.professionID = professionID
-    orderDialog.boardOnly = boardOnly
-    local name = recipeName(recipe)
-    local _, icon, color, _, _, quality = recipePresentation(recipe, name, professionID)
-    orderDialog.name:SetText(name)
-    color = color or gold
-    orderDialog.name:SetTextColor(color.r, color.g, color.b)
-    orderDialog.itemIcon:SetTexture(icon)
-    orderDialog.hero.entry = { recipe = recipe }
-    local rarity = quality and _G["ITEM_QUALITY" .. quality .. "_DESC"]
-    orderDialog.subtitle:SetText(professionName(professionID) .. (rarity and ("  ·  " .. rarity) or ""))
-    orderDialog.status:SetText("")
-    orderDialog.boardSupplies:SetChecked(true)
-    orderDialog.boardNote:SetText("")
-    orderDialog.boardDays:SetText("7")
-    orderDialog.quantity:SetText("1")
-    orderDialog.update()
-    orderDialog:Show()
+    orderDialog = addon.marketUI.openDialog(addon.marketContext(), { recipe = recipe,
+        crafter = owner ~= player and owner or nil, professionID = professionID, public = boardOnly })
 end
 
 showOrderMenu = function(row)
@@ -3528,18 +3392,21 @@ local function describeOrderRecipe(order)
     end
     local name = recipeName(id)
     local _, icon, color, _, _, quality, itemID = recipePresentation(id, name, profession)
-    return { name = name, profession = profession and professionName(profession),
-        itemID = itemID, recipeID = id, icon = icon, color = color, rarity = quality and _G["ITEM_QUALITY" .. quality .. "_DESC"] }
+    return { name = name, profession = profession and professionName(profession), professionID = profession,
+        quality = quality, itemID = itemID, recipeID = id, icon = icon, color = color,
+        rarity = quality and _G["ITEM_QUALITY" .. quality .. "_DESC"] }
 end
 
 
 -- Read-only access for the guild recipe search (RecipeFinder.lua). Uses the existing
 -- profession data, roster and order dialog; it sends no messages of its own.
-function addon.finderContext()
+function addon.finderContext(picker)
+    local cached = picker and addon.finderPickerCtx or (not picker and addon.finderCtx)
+    if cached then return cached end
     local function isMember(name)
         return name == player or not next(roster) or roster[name] ~= nil
     end
-    return {
+    local ctx = {
         source = function() return database end,
         profiles = function()
             local result = {}
@@ -3585,200 +3452,32 @@ function addon.finderContext()
         button = button,
         inCombat = uiInCombat,
     }
+    if picker then
+        -- Confirmed recipes (catalog and recipes discovered in the client) without a crafter.
+        ctx.catalogRecipes = function()
+            local recipes = {}
+            for id, record in pairs(addon.recipeCatalog) do
+                if record.profession then recipes[id] = record.profession end
+            end
+            for id, record in pairs(ForeverGuildDiscoveredRecipes or {}) do
+                if record.profession and not recipes[id] then recipes[id] = record.profession end
+            end
+            return recipes
+        end
+        addon.finderPickerCtx = ctx
+    else
+        addon.finderCtx = ctx
+    end
+    return ctx
 end
 
 local function buildOrders()
     if not orderBook then return end
-    local page = panel(window, 0)
-    window.orders = page
-    page:SetPoint("TOPLEFT", 14, -46)
-    page:SetPoint("BOTTOMRIGHT", -14, 13)
-    pageBackdrop(page, "GuildAdministration", 1.5, .88)
-    heading(page, L["Crafting orders"], 17, -14)
-    local notice = heading(page, "", 360, -43)
-    local outgoing, selection = false, nil
-    local function readOrder(key)
-        if orderBook.markRead(key) and updateOrderNotice then updateOrderNotice() end
-    end
-    local function selectDirection(value)
-        outgoing, selection = value, nil
-        notice:SetText("")
-        window.refreshOrders()
-    end
-    local mine = button(page, L["My orders"], 150, 16, -36, function() selectDirection(false) end)
-    local sent = button(page, L["Sent orders"], 170, 172, -36, function() selectDirection(true) end)
-    local left = contrastPanel(page)
-    left:SetPoint("TOPLEFT", 17, -75)
-    left:SetPoint("BOTTOMLEFT", 17, 17)
-    left:SetWidth(390)
-    local right = panel(page, 0, nil, .06)
-    right:SetPoint("TOPLEFT", left, "TOPRIGHT", 9, 0)
-    right:SetPoint("BOTTOMRIGHT", -17, 17)
-    local showCompleted = CreateFrame("CheckButton", nil, left, "UICheckButtonTemplate")
-    showCompleted:SetPoint("TOPLEFT", 8, -8)
-    local completedLabel = heading(left, L["Completed only"], 38, -18)
-    local render = list(left, 8, -42, -33, 10, 349, 26, orderItemTooltip)
-    local hero = contrastPanel(right)
-    hero:SetPoint("TOPLEFT", 11, -11)
-    hero:SetPoint("TOPRIGHT", -11, -11)
-    hero:SetHeight(76)
-    hero:EnableMouse(true)
-    hero:SetScript("OnEnter", orderItemTooltip)
-    hero:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    local itemIcon = hero:CreateTexture(nil, "ARTWORK")
-    itemIcon:SetSize(46, 46)
-    itemIcon:SetPoint("LEFT", 14, 0)
-    itemIcon:SetTexCoord(.06, .94, .06, .94)
-    local title = hero:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("TOPLEFT", 75, -16)
-    title:SetPoint("RIGHT", -14, 0)
-    title:SetJustifyH("LEFT")
-    title:SetWordWrap(false)
-    local subtitle = heading(hero, "", 76, -44)
-
-    local facts = contrastPanel(right)
-    facts:SetPoint("TOPLEFT", hero, "BOTTOMLEFT", 0, -8)
-    facts:SetPoint("TOPRIGHT", hero, "BOTTOMRIGHT", 0, -8)
-    facts:SetHeight(115)
-    local function fact(x, y, caption)
-        local label = heading(facts, caption or "", x, y)
-        local value = orderText(facts, x, y - 16, 12)
-        return value, label
-    end
-    local contact, contactLabel = fact(14, -12)
-    local timestamp, timeLabel = fact(234, -12)
-    local crafts = fact(14, -62, L["Crafts"])
-    local status = fact(234, -62, "Status")
-    local ingredients = contrastPanel(right)
-    ingredients:SetPoint("TOPLEFT", facts, "BOTTOMLEFT", 0, -9)
-    ingredients:SetPoint("TOPRIGHT", facts, "BOTTOMRIGHT", 0, -9)
-    ingredients:SetPoint("BOTTOM", 0, 48)
-    heading(ingredients, L["Materials"], 14, -12)
-    local renderIngredients = list(ingredients, 9, -33, -32, 9, 390, 18, orderItemTooltip)
-    local done = button(right, "", 200, 146, -380, function()
-        local order = ForeverGuildOrders and ForeverGuildOrders[selection]
-        if order and not order.outgoing then
-            readOrder(selection)
-            orderBook.setDone(selection, not order.done, guildKey)
-            dispatchOrders()
-            if not order.done then
-                notice:SetText((L["%s was reopened."]):format(recipeName(order.recipe)))
-            else
-                notice:SetText("")
-            end
-            window.refreshOrders()
-        end
-    end)
-    local whisper = button(right, L["Whisper#2"], 120, 17, -380, function()
-        local order = ForeverGuildOrders and ForeverGuildOrders[selection]
-        if not order or not orderBook.belongsToGuild(order, guildKey) or guildKey ~= guildIdentity() or not ChatFrame_SendTell then return end
-        local key = order.outgoing and order.recipient or order.sender
-        local member = roster[key]
-        ChatFrame_SendTell((member and member.target) or order.address or key)
-    end)
-    whisper:ClearAllPoints()
-    whisper:SetPoint("BOTTOMLEFT", 13, 12)
-    done:ClearAllPoints()
-    done:SetPoint("BOTTOMRIGHT", -13, 12)
-    window.refreshOrders = function()
-        mine:SetEnabled(outgoing)
-        sent:SetEnabled(not outgoing)
-        showCompleted:SetShown(not outgoing)
-        completedLabel:SetShown(not outgoing)
-        local visible = {}
-        for key, order in pairs(ForeverGuildOrders or {}) do
-            if orderBook.belongsToGuild(order, guildKey) and (order.outgoing == true) == outgoing and (outgoing or (order.done == true) == (showCompleted:GetChecked() and true or false)) then
-                visible[#visible + 1] = key
-            end
-        end
-        table.sort(visible, function(a, b)
-            local first, second = ForeverGuildOrders[a], ForeverGuildOrders[b]
-            if first.received == second.received then return a < b end
-            return first.received > second.received
-        end)
-        local rows, selectedOrder = {}, nil
-        for _, key in ipairs(visible) do
-            local order = ForeverGuildOrders[key]
-            if key == selection then selectedOrder = order end
-        end
-        if not selectedOrder then
-            selection = visible[1]
-            selectedOrder = selection and ForeverGuildOrders[selection]
-        end
-        local groups, labels, selectedRecipe = {}, {}, nil
-        for _, key in ipairs(visible) do
-            local order = ForeverGuildOrders[key]
-            local name = order.recipient or order.sender
-            local member = roster[fullName(name)]
-            local label = member and member.displayName or name:match("^[^-]+")
-            if not groups[label] then groups[label] = {}; labels[#labels + 1] = label end
-            local recipe = describeOrderRecipe(order)
-            if key == selection then selectedRecipe = recipe end
-            local entries = groups[label]
-            local marker = order.unread and not order.done and (L["  |cffffd36cNew|r"]) or ""
-            entries[#entries + 1] = { text = ("%d × %s%s"):format(order.quantity, recipe.name, marker),
-                icon = recipe.icon, itemID = recipe.itemID, selected = selection == key,
-                color = recipe.color or (order.done and muted or nil),
-                action = function()
-                    selection = key
-                    readOrder(key)
-                    window.refreshOrders()
-                end }
-        end
-        table.sort(labels, function(a, b) return utf8Lower(a) < utf8Lower(b) end)
-        for _, name in ipairs(labels) do
-            rows[#rows + 1] = { text = name, color = gold, category = true }
-            for _, row in ipairs(groups[name]) do rows[#rows + 1] = row end
-        end
-        render(rows)
-        title:SetText(selectedRecipe and selectedRecipe.name or (L["No orders"]))
-        hero.entry = selectedRecipe
-        itemIcon:SetTexture(selectedRecipe and selectedRecipe.icon)
-        local color = selectedRecipe and selectedRecipe.color or gold
-        title:SetTextColor(color.r, color.g, color.b)
-        subtitle:SetText(selectedRecipe and ((selectedRecipe.profession or "–")
-            .. (selectedRecipe.rarity and ("  ·  " .. selectedRecipe.rarity) or "")) or "")
-        contactLabel:SetText(outgoing and (L["Recipient"]) or (L["Requested by"]))
-        timeLabel:SetText(outgoing and (L["Created"]) or (L["Received"]))
-        contact:SetText(selectedOrder and (selectedOrder.recipient or selectedOrder.sender):match("^[^-]+") or "–")
-        timestamp:SetText(selectedOrder and date("%d.%m.%Y  %H:%M", selectedOrder.received) or "–")
-        crafts:SetText(selectedOrder and tostring(selectedOrder.quantity) or "–")
-        local deliveryLabels = {
-            confirmed = L["Delivered"],
-            waiting = L["Waiting for recipient"],
-            sent = L["Awaiting confirmation"],
-            unconfirmed = L["No confirmation"],
-            failed = L["Send failed"],
-        }
-        local state = selectedOrder and (outgoing and (selectedOrder.completed and (L["Completed"])
-            or (selectedOrder.completionVersion and (L["Reopened"]) or deliveryLabels[selectedOrder.delivery]))
-            or (selectedOrder.done and (L["Completed"])
-                or (selectedOrder.reopenedAt and (L["Reopened"]) or (L["Open"]))))
-        status:SetText(state or "–")
-        if selectedOrder and (selectedOrder.done or selectedOrder.delivery == "confirmed") then
-            status:SetTextColor(.57, .83, .37)
-        else
-            status:SetTextColor(1, .83, .51)
-        end
-        whisper:SetEnabled(selectedOrder ~= nil and ChatFrame_SendTell ~= nil)
-        renderIngredients(materialRows(selectedOrder and selectedOrder.recipe, selectedOrder and selectedOrder.quantity))
-        done:SetShown(not outgoing)
-        done:SetEnabled(selectedOrder ~= nil and not outgoing)
-        done:SetText(selectedOrder and selectedOrder.done and (L["Reopen"]) or (L["Mark completed"]))
-    end
-    window.openUnreadOrders = function()
-        showCompleted:SetChecked(false)
-        local _, newest = orderBook.unread(guildKey)
-        outgoing = newest ~= nil and ForeverGuildOrders[newest].outgoing == true
-        selection = newest
-        if newest then readOrder(newest) end
-        notice:SetText("")
-        activeTab = "orders"
-        refresh()
-    end
-    showCompleted:SetScript("OnClick", window.refreshOrders)
+    addon.marketUI.buildManager(window, addon.marketContext())
 end
 
+-- Order picker: the shared recipe search (RecipeFinder.lua) in picker mode. It lists the
+-- guild's recipes and, optionally, confirmed recipes without a known crafter for public orders.
 local function openBoardCatalog()
     if uiInCombat() then return end
     local dialog = window.boardCatalog
@@ -3787,255 +3486,43 @@ local function openBoardCatalog()
         window.boardCatalog = dialog
         table.insert(UISpecialFrames, "ForeverGuildBoardCatalog")
         local availableWidth, availableHeight = UIParent:GetSize()
-        local width = math.min(1050, availableWidth - 44)
-        local height = math.min(680, availableHeight - 44)
-        dialog:SetSize(width, height)
+        dialog:SetSize(math.min(1120, availableWidth - 44), math.min(720, availableHeight - 44))
         dialog:SetPoint("CENTER")
         dialog:SetFrameStrata("FULLSCREEN_DIALOG")
         dialog:SetClampedToScreen(true)
-        dialog:SetTitle(L["Bulletin board · Choose recipe"])
+        dialog:SetTitle(L["ForeverGuild · Choose item for a crafting order"])
         dialog:SetPortraitToAsset(addonIcon)
         local body = panel(dialog)
         body:SetPoint("TOPLEFT", 12, -45)
         body:SetPoint("BOTTOMRIGHT", -12, 13)
         pageBackdrop(body, "GuildProfessions", 1.5, .88)
-        local categories = contrastPanel(body)
-        categories:SetPoint("TOPLEFT", 8, -8)
-        categories:SetPoint("BOTTOMLEFT", 8, 8)
-        categories:SetWidth(176)
-        local types = contrastPanel(body)
-        types:SetPoint("TOPLEFT", categories, "TOPRIGHT", 8, 0)
-        types:SetPoint("BOTTOMLEFT", categories, "BOTTOMRIGHT", 8, 0)
-        types:SetWidth(172)
-        local results = contrastPanel(body)
-        results:SetPoint("TOPLEFT", types, "TOPRIGHT", 8, 0)
-        results:SetPoint("BOTTOMRIGHT", -8, 8)
-
-        heading(categories, L["Professions"], 12, -12)
-        heading(types, L["Categories"], 12, -12)
-        heading(results, L["Recipe name, item name or recipe ID"], 12, -12)
-        local input = CreateFrame("EditBox", nil, results, "InputBoxTemplate")
-        input:SetPoint("TOPLEFT", 17, -32)
-        input:SetPoint("TOPRIGHT", -14, -32)
-        input:SetHeight(24)
-        input:SetMaxBytes(100)
-        input:SetAutoFocus(false)
-        input:SetScript("OnEscapePressed", input.ClearFocus)
-        local renderCategories = list(categories, 8, -34, -26, 8, 140, 24)
-        local renderTypes = list(types, 8, -34, -26, 8, 135, 24)
-        local renderResults, resultsScroll = list(results, 8, -89, -28, 44, math.max(120, width - 440), 24, recipeTooltip)
-        local progress = CreateFrame("StatusBar", nil, results)
-        progress:SetPoint("TOPLEFT", 12, -62)
-        progress:SetPoint("TOPRIGHT", -12, -62)
-        progress:SetHeight(18)
-        progress:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
-        progress:SetStatusBarColor(.26, .50, .27)
-        local progressBackground = progress:CreateTexture(nil, "BACKGROUND")
-        progressBackground:SetAllPoints()
-        progressBackground:SetColorTexture(.1, .08, .06, 1)
-        local progressText = progress:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        progressText:SetPoint("CENTER")
-        dialog.updateProgress = function()
-            progress:SetShown(recipeLoad.remaining > 0 or recipeLoad.failed > 0)
-            progress:SetMinMaxValues(0, math.max(1, recipeLoad.total))
-            local ready = recipeLoad.total - recipeLoad.remaining - recipeLoad.failed
-            progress:SetValue(ready)
-            progressText:SetText(recipeLoad.remaining > 0
-                and (L["Loading item data · %d / %d"]):format(ready, recipeLoad.total)
-                or (L["%d item records still unavailable"]):format(recipeLoad.failed))
+        local ctx = addon.finderContext(true)
+        ctx.order = function(recipe, crafter, professionID)
+            if crafter == player then return end
+            dialog:Hide()
+            showOrderDialog(recipe, crafter, professionID)
         end
-        local status = heading(results, "", 97, 0)
-        status:ClearAllPoints()
-        status:SetPoint("BOTTOMLEFT", 97, 15)
-        status:SetPoint("RIGHT", -97, 0)
-        status:SetJustifyH("CENTER")
-        local profession, category, page, matching = nil, nil, 1, {}
-        local function turnPage(offset)
-            page = page + offset
-            resultsScroll:SetVerticalScroll(0)
-            dialog.renderResults()
+        ctx.public = function(recipe, professionID)
+            dialog:Hide()
+            showOrderDialog(recipe, nil, professionID, true)
         end
-        local prev = button(results, L["Previous"], 80, 0, 0, function() turnPage(-1) end)
-        local nextPage = button(results, L["Next"], 80, 0, 0, function() turnPage(1) end)
-        prev:ClearAllPoints()
-        nextPage:ClearAllPoints()
-        prev:SetPoint("BOTTOMLEFT", 10, 10)
-        nextPage:SetPoint("BOTTOMRIGHT", -10, 10)
-
-        local catalog, professions
-        local typeCache = {}
-        local armor = {
-            [0] = L["Jewelry & accessories"],
-            [1] = L["Cloth"],
-            [2] = L["Leather"],
-            [3] = L["Mail"],
-            [4] = L["Plate"],
-            [6] = L["Shields"],
-        }
-        local function outputFor(id)
-            local record = addon.recipeCatalog[id] or ForeverGuildDiscoveredRecipes[id]
-            local output = (record and record.output) or addon.recipeOutputs[id]
-            if type(output) == "table" then return output[1] end
-            return output
-        end
-        local function recipeType(id, skill)
-            local output = outputFor(id)
-            if output and typeCache[output] then return typeCache[output] end
-            if output and C_Item and C_Item.GetItemInfoInstant then
-                local _, itemClass, itemSubclass, _, _, classID, subclassID = C_Item.GetItemInfoInstant(output)
-                local label = (classID == 4 and armor[subclassID])
-                    or (classID == 2 and (L["Weapons"]))
-                if not label and classID and classID < 16 then label = itemClass end
-                if not label or label == "" then label = itemSubclass end
-                if label and label ~= "" then
-                    typeCache[output] = label
-                    return label
-                end
-            end
-            if not output and skill == 333 then return L["Enchantments"] end
-            return L["Other recipes"]
-        end
-        local function rebuildCatalog()
-            catalog, professions = {}, {}
-            local function add(id, skill)
-                if not catalog[id] and skill then
-                    catalog[id] = skill
-                    professions[skill] = true
-                end
-            end
-            for id, record in pairs(addon.recipeCatalog) do add(id, record.profession) end
-            for id, record in pairs(ForeverGuildDiscoveredRecipes) do add(id, record.profession) end
-            local function merge(profile)
-                for skill, data in pairs(profile or {}) do
-                    for id in pairs(data.recipes or {}) do add(id, skill) end
-                end
-            end
-            merge(ForeverGuildCharacter)
-            for member, profile in pairs(database or {}) do
-                if roster[member] then merge(profile.professions) end
-            end
-        end
-
-        dialog.renderResults = function()
-            local pageSize = 60
-            local totalPages = math.max(1, math.ceil(#matching / pageSize))
-            page = math.max(1, math.min(page, totalPages))
-            local rows = {}
-            for index = (page - 1) * pageSize + 1, math.min(page * pageSize, #matching) do
-                local entry = matching[index]
-                local icon = C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(entry.id)
-                if icon == 134400 then icon = nil end
-                local color = recipeItemDetails(outputFor(entry.id))
-                rows[#rows + 1] = { text = entry.name .. "  ·  " .. entry.category,
-                    icon = icon or professionIcons[entry.skill], recipe = entry.id, color = color,
-                    action = function()
-                        input:ClearFocus()
-                        dialog:Hide()
-                        showOrderDialog(entry.id, nil, entry.skill, true)
-                    end }
-            end
-            if #rows == 0 then rows[1] = { text = L["No matching recipes."], color = muted } end
-            renderResults(rows)
-            prev:SetEnabled(page > 1)
-            nextPage:SetEnabled(page < totalPages)
-            status:SetText((L["%d matches · %d / %d"]):format(#matching, page, totalPages))
-        end
-
-        local function filter(preservePosition)
-            matching = {}
-            if not preservePosition then page = 1 end
-            local query = utf8Lower(input:GetText():match("^%s*(.-)%s*$"))
-            local idQuery = tonumber(query:match("^#?(%d+)$"))
-            if idQuery and idQuery >= 1 and idQuery <= 2147483647 and not catalog[idQuery]
-                and trade and trade.GetProfessionInfoByRecipeID then
-                local ok, info = pcall(trade.GetProfessionInfoByRecipeID, idQuery)
-                local skill = ok and info and info.professionID
-                if skill and skill > 0 then
-                    catalog[idQuery], professions[skill] = skill, true
-                end
-            end
-            local availableTypes = {}
-            for id, skill in pairs(catalog) do
-                if not profession or skill == profession then
-                    local label = recipeType(id, skill)
-                    availableTypes[label] = true
-                    local name = recipeName(id)
-                    if name ~= "#" .. id or idQuery == id or query == "" then
-                        local lower = utf8Lower(name)
-                        local output = outputFor(id)
-                        local cached = output and itemDetails[output]
-                        local itemName = cached and cached.name
-                        if (not category or label == category)
-                            and (query == "" or idQuery == id or lower:find(query, 1, true)
-                                or (itemName and utf8Lower(itemName):find(query, 1, true))) then
-                            matching[#matching + 1] = { id = id, skill = skill, name = name,
-                                sortName = lower, category = label }
-                        end
-                    end
-                end
-            end
-            table.sort(matching, function(a, b)
-                if a.sortName == b.sortName then return a.id < b.id end
-                return a.sortName < b.sortName
-            end)
-            local labels = {}
-            for label in pairs(availableTypes) do labels[#labels + 1] = label end
-            table.sort(labels, function(a, b) return utf8Lower(a) < utf8Lower(b) end)
-            local typeRows = { { text = L["All categories"], selected = not category,
-                action = function() category = nil; filter() end } }
-            for _, label in ipairs(labels) do
-                typeRows[#typeRows + 1] = { text = label, selected = category == label,
-                    action = function() category = label; filter() end }
-            end
-            renderTypes(typeRows)
-            if not preservePosition then resultsScroll:SetVerticalScroll(0) end
-            dialog.renderResults()
-        end
-
-        local function showCategories()
-            local skills = {}
-            for skill in pairs(professions) do skills[#skills + 1] = { id = skill, name = professionName(skill) } end
-            table.sort(skills, function(a, b) return utf8Lower(a.name) < utf8Lower(b.name) end)
-            local rows = { { text = L["All professions"], selected = not profession,
-                action = function() profession, category = nil, nil; dialog.refresh() end } }
-            for _, skill in ipairs(skills) do
-                rows[#rows + 1] = { text = skill.name, selected = profession == skill.id,
-                    icon = professionIcons[skill.id], action = function() profession, category = skill.id, nil; dialog.refresh() end }
-            end
-            renderCategories(rows)
-        end
-        dialog.refresh = function()
-            showCategories()
-            filter()
-        end
-        dialog.prepare = function()
-            dialog.updateProgress()
-            rebuildCatalog()
-            profession, category = nil, nil
-            input:SetText("")
-            dialog.refresh()
-        end
-        local itemRefreshQueued
+        dialog.finder = addon.recipeFinder.create(body, ctx, { picker = true })
+        dialog.finder:SetPoint("TOPLEFT", 8, -8)
+        dialog.finder:SetPoint("BOTTOMRIGHT", -8, 8)
+        dialog.updateProgress = function() end
+        local queued
         dialog.queueItemRefresh = function()
-            if itemRefreshQueued then return end
-            itemRefreshQueued = true
+            if queued then return end
+            queued = true
             after(.6, function()
-                itemRefreshQueued = false
-                if dialog:IsShown() then filter(true) end
+                queued = false
+                if dialog:IsShown() then dialog.finder.refresh(false) end
             end)
         end
-        local filterQueued
-        input:SetScript("OnTextChanged", function()
-            if filterQueued then return end
-            filterQueued = true
-            after(.15, function()
-                filterQueued = false
-                if dialog:IsShown() then filter() end
-            end)
-        end)
     end
-    dialog.prepare()
     dialog:Show()
+    dialog.finder:Show()
+    dialog.finder.refresh(true)
 end
 
 local function openGroupComposer(onPosted)
@@ -4275,6 +3762,7 @@ local function buildBoardNotes(page)
     left:SetPoint("TOPLEFT", 8, -8)
     left:SetPoint("BOTTOMLEFT", 8, 8)
     left:SetWidth(335)
+    window.groupList = left
     local render = list(left, 8, -8, -30, 8, 299, 53)
     local detail = contrastPanel(pane)
     detail:SetPoint("TOPLEFT", left, "TOPRIGHT", 8, 0)
@@ -4551,6 +4039,7 @@ local function buildBoard()
 
     local section = "orders"
     local notesPane, refreshNotes = buildBoardNotes(page)
+    window.boardNotes = notesPane
     local rail = page:CreateTexture(nil, "ARTWORK")
     rail:SetPoint("TOPLEFT", 18, -38)
     rail:SetPoint("TOPRIGHT", -18, -38)
@@ -4594,6 +4083,11 @@ local function buildBoard()
             section = key
             window.refreshBoard()
         end)
+        -- Lets the tour switch between crafting orders and group search.
+        window.showBoardSection = function(wanted)
+            section = wanted
+            window.refreshBoard()
+        end
         sections[key] = function(active)
             background:SetTexture(tabArt .. (active and "Active" or "Idle"))
             if active then
@@ -4603,225 +4097,15 @@ local function buildBoard()
             end
         end
     end
-    local create = button(page, L["Place new order"], 210, 0, 0, openBoardCatalog)
-    create:ClearAllPoints()
-    create:SetPoint("TOPRIGHT", -17, -44)
-    local view, selection = "active", nil
-    local filters = {}
-    for index, choice in ipairs({
-        { "active", L["On the board"] },
-        { "mine", L["My orders"] },
-        { "history", L["History"] },
-    }) do
-        local mode, caption = choice[1], choice[2]
-        filters[mode] = button(page, caption, 126, 17 + (index - 1) * 132, -44, function()
-            view, selection = mode, nil
-            window.refreshBoard()
-        end)
-    end
-
-    local left = contrastPanel(page)
-    left:SetPoint("TOPLEFT", 17, -75)
-    left:SetPoint("BOTTOMLEFT", 17, 17)
-    left:SetWidth(365)
-    local searchOrders = CreateFrame("EditBox", nil, left, "InputBoxTemplate")
-    searchOrders:SetPoint("TOPLEFT", 15, -13)
-    searchOrders:SetPoint("TOPRIGHT", -17, -13)
-    searchOrders:SetHeight(24)
-    searchOrders:SetAutoFocus(false)
-    searchOrders:SetMaxBytes(80)
-    searchOrders:SetScript("OnEscapePressed", searchOrders.ClearFocus)
-    local placeholder = heading(searchOrders, L["Search orders"], 4, -5)
-    searchOrders:SetScript("OnTextChanged", function(self)
-        placeholder:SetShown(self:GetText() == "")
-        window.refreshBoard()
-    end)
-    local render = list(left, 9, -47, -32, 10, 325, 53, orderItemTooltip)
-
-    local detail = panel(page, .34, nil, .96)
-    detail:SetPoint("TOPLEFT", left, "TOPRIGHT", 10, 0)
-    detail:SetPoint("BOTTOMRIGHT", -17, 17)
-    local summary = contrastPanel(detail)
-    summary:SetPoint("TOPLEFT", 10, -10)
-    summary:SetPoint("TOPRIGHT", -10, -10)
-    summary:SetHeight(166)
-    local pin = summary:CreateTexture(nil, "ARTWORK")
-    pin:SetTexture("Interface\\ICONS\\INV_Misc_Note_01")
-    pin:SetSize(32, 32)
-    pin:SetPoint("TOPLEFT", 12, -12)
-    local title = orderText(summary, 55, -13, 14)
-    title:SetFontObject(GameFontNormalLarge)
-    local statusText = orderText(summary, 56, -37, 14)
-    local facts = orderText(summary, 13, -64, 13)
-    local note = orderText(summary, 13, -124, 13)
-    note:SetTextColor(.83, .72, .57)
-    local ingredients = contrastPanel(detail)
-    ingredients:SetPoint("TOPLEFT", 10, -194)
-    ingredients:SetPoint("BOTTOMRIGHT", -10, 77)
-    heading(ingredients, L["Materials"], 10, -9)
-    local renderMaterials = list(ingredients, 9, -28, -32, 8, 380, 20, orderItemTooltip)
-    local hint = detail:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    hint:SetPoint("BOTTOMLEFT", 14, 43)
-    hint:SetPoint("RIGHT", -14, 0)
-    hint:SetJustifyH("LEFT")
-
-    local function act(action)
-        local order = addon.board.records(guildKey)[selection]
-        if not order or guildKey ~= guildIdentity() or not orderChannel then return end
-        if action == "moderate" then addon.boardModerate("O", order.owner, order.token)
-        else addon.board.action(order, player, action, broadcastOrder, sendOrderMessage, orderClock()) end
-        window.refreshBoard()
-    end
-    local mainAction, secondaryAction
-    local primary = button(detail, "", 210, 0, 0, function() act(mainAction) end)
-    primary:ClearAllPoints()
-    primary:SetPoint("BOTTOMRIGHT", -11, 11)
-    local secondary = button(detail, "", 142, 0, 0, function() act(secondaryAction) end)
-    secondary:ClearAllPoints()
-    secondary:SetPoint("BOTTOMLEFT", 11, 11)
-
-    local labels = {
-        O = L["Open"], W = L["In progress"],
-        R = L["Ready for handoff"],
-        D = L["Completed#2"], X = L["Withdrawn"],
-        E = L["Expired"],
-    }
-    local stateOrder = { O = 1, W = 2, R = 3, D = 4, X = 5, E = 6 }
-    local stateColors = {
-        O = {r=.89,g=.73,b=.42}, W = {r=.61,g=.78,b=.90}, R = {r=.60,g=.83,b=.62},
-        D = {r=.60,g=.83,b=.62}, X = muted, E = muted,
-    }
-    -- The crafter arrives in the requester's spelling (e.g. "Name Surname-" on Forever);
-    -- normalize it locally so the own character and roster entries are recognized.
-    local function mine(name)
-        return name ~= nil and (name == player or fullName(name) == player)
-    end
-    local function display(key)
-        local member = roster[key] or (key and roster[fullName(key)])
-        return member and member.displayName or key or "–"
-    end
-    local function knowsRecipe(id)
-        for _, profession in pairs(ForeverGuildCharacter or {}) do
-            if profession.recipes and profession.recipes[id] then return true end
-        end
-        return false
-    end
-
+    local orderView = addon.marketUI.buildBoard(page, addon.marketContext())
+    window.boardOrders = orderView
     window.refreshBoard = function()
         for key, setActive in pairs(sections) do setActive(key == section) end
         local showOrders = section == "orders"
         notesPane:SetShown(not showOrders)
-        create:SetShown(showOrders)
-        left:SetShown(showOrders)
-        detail:SetShown(showOrders)
-        for mode, control in pairs(filters) do
-            control:SetShown(showOrders)
-            control:SetEnabled(mode ~= view)
-        end
+        orderView:SetShown(showOrders)
         if not showOrders then refreshNotes(); return end
-        local records = addon.board.records(guildKey)
-        local now = orderClock()
-        create:SetEnabled(database ~= nil and not not orderChannel and addon.boardCan("order"))
-        local keys, rows = {}, {}
-        local query = utf8Lower(searchOrders:GetText():match("^%s*(.-)%s*$"))
-        for key, order in pairs(records) do
-            local state = addon.board.state(order, now)
-            local closed = state == "D" or state == "X" or state == "E"
-            local own = order.owner == player or mine(order.crafter) or order.intent == "take"
-            if not addon.boardRights.hidden(guildKey, "O", order.owner, order.token)
-                and ((view == "history" and closed) or (not closed and (view == "active" or own))) then
-                if query == "" or utf8Lower(recipeName(order.recipe)):find(query, 1, true)
-                    or utf8Lower(display(order.owner)):find(query, 1, true)
-                    or utf8Lower(display(order.crafter)):find(query, 1, true) then
-                    keys[#keys + 1] = key
-                end
-            end
-        end
-        table.sort(keys, function(a, b)
-            local first, second = records[a], records[b]
-            local firstState = stateOrder[addon.board.state(first, now)]
-            local secondState = stateOrder[addon.board.state(second, now)]
-            if firstState ~= secondState then return firstState < secondState end
-            local firstTime = tonumber(first.token:match("^%d+")) or 0
-            local secondTime = tonumber(second.token:match("^%d+")) or 0
-            if firstTime == secondTime then return a > b end
-            return firstTime > secondTime
-        end)
-        local found
-        for _, key in ipairs(keys) do if key == selection then found = true; break end end
-        if not found then selection = keys[1] end
-        local priorState
-        for _, key in ipairs(keys) do
-            local order = records[key]
-            local state = addon.board.state(order, now)
-            if priorState ~= state then
-                rows[#rows + 1] = { text = labels[state], color = stateColors[state], category = true }
-                priorState = state
-            end
-            local recipe = describeOrderRecipe(order)
-            rows[#rows + 1] = { text = ("%d × %s"):format(order.quantity, recipe.name),
-                subtitle = display(order.owner) .. (order.crafter and (" · " .. display(order.crafter)) or ""),
-                color = recipe.color, boardCard = true, statusColor = stateColors[state],
-                icon = recipe.icon, itemID = recipe.itemID, selected = key == selection,
-                action = function() selection = key; window.refreshBoard() end }
-        end
-        if #rows == 0 then
-            rows[1] = { text = L["No orders in this view."], color = muted }
-        end
-        render(rows)
-        local order = records[selection]
-        title:SetText(order and ("%d × %s"):format(order.quantity, recipeName(order.recipe))
-            or (L["No order selected"]))
-        local state = order and addon.board.state(order, now)
-        statusText:SetText(state and labels[state] or "")
-        if state then
-            local tone = stateColors[state]
-            statusText:SetTextColor(tone.r, tone.g, tone.b)
-        end
-        local deadline = order and order.expiresAt and ("\n" .. (L["Open until: "])
-            .. date("%d.%m.%Y %H:%M", order.expiresAt)) or ""
-        facts:SetText(order and ((L["Requester: %s   ·   Crafter: %s\n%s"]):format(
-            display(order.owner), display(order.crafter),
-            order.supplies and (L["The requester provides materials."])
-                or (L["The crafter provides materials."])) .. deadline) or "")
-        note:SetText(order and order.note or "")
-        ingredients:SetShown(order ~= nil)
-        renderMaterials(materialRows(order and order.recipe, order and order.quantity))
-        local caption, alternate, message
-        mainAction, secondaryAction = nil, nil
-        if state == "E" then
-            message = L["The deadline has passed."]
-        elseif order and order.intent then
-            message = L["Waiting for the requester's confirmation."]
-        elseif order and order.state == "O" then
-            if order.owner == player then
-                secondaryAction, alternate = "cancel", L["Withdraw"]
-            elseif knowsRecipe(order.recipe) then
-                mainAction, caption = "take", L["Claim order"]
-                if not (roster[order.owner] and roster[order.owner].online) then
-                    message = L["Your claim is confirmed when you are both online."]
-                end
-            else
-                message = L["Recipe missing. Open your professions to update known recipes."]
-            end
-        elseif order and mine(order.crafter) and (order.state == "W" or order.state == "R") then
-            secondaryAction, alternate = "release", L["Release"]
-            if order.state == "W" then
-                mainAction, caption = "ready", L["Ready for handoff#2"]
-            end
-        elseif order and order.owner == player and order.state == "R" then
-            mainAction, caption = "received", L["Received#2"]
-        end
-        if order and not secondaryAction and order.owner ~= player and addon.boardMayModerate("O") then
-            secondaryAction, alternate = "moderate", L["Hide"]
-        end
-        hint:SetText(message or "")
-        primary:SetShown(mainAction ~= nil)
-        secondary:SetShown(secondaryAction ~= nil)
-        primary:SetText(caption or "")
-        secondary:SetText(alternate or "")
-        primary:SetEnabled(not not orderChannel)
-        secondary:SetEnabled(not not orderChannel)
+        orderView.refresh()
     end
 end
 
@@ -4873,6 +4157,10 @@ local function buildGuildBank()
     local inventory = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
     inventory:SetPoint("TOPLEFT", 12, -111)
     inventory:SetPoint("BOTTOMRIGHT", settings, "BOTTOMLEFT", -29, 0)
+    -- Tour target: bank search and inventory together.
+    window.bankFocus = CreateFrame("Frame", nil, pane)
+    window.bankFocus:SetPoint("TOPLEFT", searchBank, "TOPLEFT", -6, 4)
+    window.bankFocus:SetPoint("BOTTOMRIGHT", inventory, "BOTTOMRIGHT", 22, 0)
     local content = CreateFrame("Frame", nil, inventory)
     content:SetSize(1, 1)
     inventory:SetScrollChild(content)
@@ -5078,8 +4366,8 @@ local function buildHelp()
             L["Read the guild message and any member notes you can view."],
             L["With the relevant WoW permissions, you can edit the message and notes. Open WoW guild management for ranks and other guild actions."]},
         {L["Crafting orders"],
-            L["Track incoming and sent orders."],
-            L["My orders lists incoming orders. You can whisper the requester and mark an order complete. Sent orders shows the status of your requests. The minimap envelope opens new orders and completion notifications.\n\nTo offer an order to the guild, open the bulletin board and click Place new order. Select a recipe, quantity, and a duration of 1 to 30 days."]},
+            L["Manage requests, accepted orders, handoffs and payments in one place."],
+            L["Tabs: Incoming orders (direct requests to you), My accepted orders, My orders, Ready for handoff and History. Select a card to see materials, payment, handoff and the order history; the buttons below change with the order status and your role.\n\nThe order dialog sets crafts, materials you provide, tip or fixed fee, material reimbursement, handoff method, message, posting duration and completion deadline. Payments are only recorded: players pay each other at handoff, ForeverGuild never holds gold.\n\nNotifications appear as pop-up, chat line and counter; set them up under Settings, Notifications. Orders of older versions can be cancelled, archived or removed locally; see Settings, Data management."]},
         {"Log",
             L["Check when ForeverGuild synchronized data."],
             L["Use Export diagnostics to copy the logs for a bug report."]},
@@ -5097,9 +4385,9 @@ local function buildHelp()
     }
     local topicIcons = {
         "TabProfessions", "TabRoster", "TabAdministration",
-        "TabOrders", "TabLog", "SettingsGear", "Interface\\Icons\\INV_Misc_Coin_01",
+        "TabOrders", "TabLog", "SettingsGear", addon.moduleIcons.bank,
     }
-    local advice = { L["The dialog lists materials for the selected quantity. After sending, check Crafting orders under Sent orders. Pending orders are queued for later delivery."], L["Use search and Online only to filter the roster. Select a member to see their professions and choose Show recipes to browse them."], L["Select a character on the left to edit member notes. Public and officer notes each have their own save button."], L["Use Completed only to find finished orders. Reopen moves an order back to the active list. Hover the result or any material to see its item tooltip."], L["After a failed sync, export the diagnostics and share the log with a description of the problem."], L["Under Guild bank, you can separately configure automatic requests and sharing."], L["The saved snapshot is available with the vault closed. Automatic sync uses the WoW guild channel. Both options are under Settings, then Guild bank."] }
+    local advice = { L["The dialog lists the materials for the chosen number of crafts; enter how many you provide. Your order then appears under Crafting orders, My orders."], L["Use search and Online only to filter the roster. Select a member to see their professions and choose Show recipes to browse them."], L["Select a character on the left to edit member notes. Public and officer notes each have their own save button."], L["Cards marked with ! need your action. Hover an item or material to see its tooltip. A change you request stays pending until the requester’s client confirms it."], L["After a failed sync, export the diagnostics and share the log with a description of the problem."], L["Under Guild bank, you can separately configure automatic requests and sharing."], L["The saved snapshot is available with the vault closed. Automatic sync uses the WoW guild channel. Both options are under Settings, then Guild bank."] }
     local icon = details:CreateTexture(nil, "ARTWORK")
     icon:SetSize(44, 44)
     icon:SetPoint("TOPLEFT", 18, -15)
@@ -5211,7 +4499,8 @@ local function toggle()
     window = CreateFrame("Frame", "ForeverGuildWindow", UIParent, "PortraitFrameTemplate")
     table.insert(UISpecialFrames, "ForeverGuildWindow")
     resizeMainWindow()
-    local gear = button(window, "", 27, 0, 0, showSettings)
+    local gear = button(window, "", 27, 0, 0, function() showSettings() end)
+    window.gearButton = gear
     gear:ClearAllPoints()
     gear:SetSize(27, 18)
     if window.CloseButton then
@@ -5227,6 +4516,17 @@ local function toggle()
     gearIcon:SetTexture("Interface\\AddOns\\ForeverGuild\\Art\\SettingsGear")
     iconTooltip(gear, L["Settings"])
     window:SetPoint("CENTER")
+    -- Window scale and start page from the settings (both optional, account-wide).
+    local function applyStartSettings()
+        local saved = ForeverGuildSettings or {}
+        window:SetScale((tonumber(saved.windowScale) or 100) / 100)
+        if saved.startTab then activeTab = saved.startTab end
+    end
+    applyStartSettings()
+    window:HookScript("OnShow", function()
+        applyStartSettings()
+        refresh()
+    end)
     window:SetMovable(true)
     window:SetClampedToScreen(true)
     window:SetClampRectInsets(0, 42, 0, 0)
@@ -5247,52 +4547,52 @@ local function toggle()
     window.professionTab = sideTab(window, 2, "Interface\\AddOns\\ForeverGuild\\Art\\TabProfessions", L["Guild professions"], function()
         activeTab = "professions"
         refresh()
-    end)
+    end, L["Search the recipes of all guild members and find a crafter for every item."])
     window.logTab = sideTab(window, -3, "Interface\\AddOns\\ForeverGuild\\Art\\TabLog", "Log", function()
         activeTab = "log"
         refresh()
-    end)
+    end, L["Chronicle of synchronizations and guild activity."])
     window.rosterTab = sideTab(window, 1, "Interface\\AddOns\\ForeverGuild\\Art\\TabRoster", L["Guild roster"], function()
         updateRoster()
         activeTab = "roster"
         if database and C_GuildInfo and C_GuildInfo.GuildRoster then C_GuildInfo.GuildRoster() end
         refresh()
-    end)
+    end, L["Guild members with roles, specializations, classes and online status."])
 
     window.adminTab = sideTab(window, -2, "Interface\\AddOns\\ForeverGuild\\Art\\TabAdministration", L["Guild management"], function()
         updateRoster()
         activeTab = "admin"
         if database and C_GuildInfo and C_GuildInfo.GuildRoster then C_GuildInfo.GuildRoster() end
         refresh()
-    end)
+    end, L["Guild message, member notes, permissions and partner guilds."])
     buildGuildAdmin()
     if orderBook then
         window.ordersTab = sideTab(window, 3, "Interface\\AddOns\\ForeverGuild\\Art\\TabOrders", L["Crafting orders"], function()
             activeTab = "orders"
             refresh()
-        end)
+        end, L["Manage your incoming, accepted and own orders including materials, crafting, payment and handoff."])
         buildOrders()
-        window.boardTab = sideTab(window, 5, "Interface\\ICONS\\INV_Misc_Note_01", L["Bulletin board"], function()
+        window.boardTab = sideTab(window, 5, addon.moduleIcons.board, L["Bulletin board"], function()
             activeTab = "board"
             refresh()
-        end)
+        end, L["Find public crafting orders, offer your crafting services and plan group activities together."])
         buildBoard()
     end
 
     if guildBank then
-        window.bankTab = sideTab(window, 4, "Interface\\ICONS\\INV_Misc_Coin_01", L["Guild bank"], function()
+        window.bankTab = sideTab(window, 4, addon.moduleIcons.bank, L["Guild bank"], function()
             activeTab = "bank"
             if preference("bankAutoRequest") then requestBankSnapshot() end
             scanVisibleBank()
             refresh()
-        end)
+        end, L["Search the last synchronized items of your guild bank and see which materials are available."])
         buildGuildBank()
     end
 
     window.helpTab = sideTab(window, -1, "Interface\\AddOns\\ForeverGuild\\Art\\TabHelp", L["Help"], function()
         activeTab = "help"
         refresh()
-    end)
+    end, L["The in-game guide to every ForeverGuild page."])
     buildHelp()
 
     window.professions = panel(window, 0)
@@ -5439,8 +4739,9 @@ local function createMinimapIcon()
 end
 
 updateOrderNotice = function()
+    if window and window.ordersTab then addon.marketUI.updateBadge(window, addon.marketContext()) end
     if not orderNotice then return end
-    local total = orderBook.unread(guildKey)
+    local total = orderBook.unread(guildKey) + addon.market.unread(guildKey)
     orderNotice.counter:SetText(total > 99 and "99+" or tostring(total))
     orderNotice.counter:SetShown(total > 1)
     orderNotice:SetShown(total > 0)
@@ -5475,7 +4776,7 @@ local function createOrderNotice()
     icon:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight", "ADD")
     icon:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        local total = orderBook.unread(guildKey)
+        local total = orderBook.unread(guildKey) + addon.market.unread(guildKey)
         GameTooltip:SetText(L["Order notifications"])
         GameTooltip:AddLine((L["Unread: %d"]):format(total), 1, 1, 1)
         GameTooltip:Show()
@@ -5488,6 +4789,207 @@ local function createOrderNotice()
         GameTooltip:Hide()
     end)
     updateOrderNotice()
+end
+
+-- Access for the crafting marketplace (Market.lua, Board.lua, MarketUI.lua). Messages
+-- use the existing order channel; nothing is sent outside the guild transport.
+function addon.marketContext()
+    if addon.marketCtx then return addon.marketCtx end
+    local function member(name)
+        return name and (roster[name] or roster[fullName(name)])
+    end
+    local ctx = {}
+    ctx.player = function() return player end
+    ctx.guild = function() return guildKey end
+    ctx.clock = orderClock
+    ctx.normalize = function(name) return name and fullName(name) end
+    ctx.same = function(name) return name ~= nil and (name == player or fullName(name) == player) end
+    ctx.key = function(order) return addon.board.id(order.owner, order.token) end
+    ctx.ready = function() return database ~= nil and orderChannel ~= nil and orderChannel ~= false and guildKey == guildIdentity() end
+    ctx.canPost = function() return addon.boardCan("order") and true or false end
+    ctx.isOnline = function(name) local entry = member(name); return entry ~= nil and entry.online == true end
+    ctx.displayName = function(name)
+        local entry = member(name)
+        return entry and entry.displayName or (name and name:match("^[^-]+")) or "–"
+    end
+    ctx.whisper = function(name)
+        local entry = member(name)
+        if ChatFrame_SendTell and name then ChatFrame_SendTell((entry and entry.target) or name) end
+    end
+    ctx.describe = describeOrderRecipe
+    ctx.recipeName = recipeName
+    ctx.recipeTooltip = recipeTooltip
+    ctx.skill = function(recipe) return addon.recipeSkills and addon.recipeSkills[recipe] end
+    ctx.materials = function(recipe) return recipe and orderBook.materials(recipe) end
+    ctx.itemName = function(id)
+        recipeItemDetails(id)
+        local cached = itemDetails[id]
+        local getName = C_Item and C_Item.GetItemNameByID
+        return (cached and cached.name) or (getName and getName(id)) or ("Item #" .. id)
+    end
+    ctx.itemIcon = function(id)
+        return C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(id) or "Interface\\Icons\\INV_Misc_QuestionMark"
+    end
+    ctx.knows = function(recipe)
+        for _, profession in pairs(ForeverGuildCharacter or {}) do
+            if type(profession) == "table" and profession.recipes and profession.recipes[recipe] then return true end
+        end
+        return false
+    end
+    ctx.crafters = function(recipe)
+        local found = {}
+        for name, profile in pairs(database or {}) do
+            if name ~= player and roster[name] and type(profile) == "table" then
+                for _, profession in pairs(profile.professions or {}) do
+                    if type(profession) == "table" and profession.recipes and profession.recipes[recipe] then
+                        local online = roster[name].online
+                        found[#found + 1] = { name = name, online = online, label = roster[name].displayName
+                            .. (online and ("  |cff73dc73" .. L["Online"] .. "|r") or ("  |cff9b9389" .. L["Offline"] .. "|r")) }
+                        break
+                    end
+                end
+            end
+        end
+        table.sort(found, function(a, b)
+            if a.online ~= b.online then return a.online and true or false end
+            return a.label < b.label
+        end)
+        return found
+    end
+    ctx.supportsMarket = function(name) return addon.market.supports(guildKey, name) end
+    -- Central orderability check (RecipeFinder.lua): TRADEABLE, SERVICE, NON_TRADEABLE or UNKNOWN.
+    ctx.orderStatus = function(recipe, professionID)
+        local status = addon.recipeFinder.recipeTradeStatus(recipe, professionID, addon.finderContext())
+        return status
+    end
+    ctx.hidden = function(order) return addon.boardRights.hidden(guildKey, "O", order.owner, order.token) ~= nil end
+    ctx.mayModerate = function() return addon.boardMayModerate("O") and true or false end
+    ctx.moderate = function(order) addon.boardModerate("O", order.owner, order.token); queueRefresh() end
+    ctx.legacyOrders = function() return ForeverGuildOrders end
+    ctx.isArchived = function(key) return addon.market.isArchived(guildKey, key) end
+    ctx.archive = function(key, archived)
+        addon.market.archive(guildKey, key, orderClock(), archived)
+        if archived ~= false then addon.market.markRead(guildKey, key) end
+        if updateOrderNotice then updateOrderNotice() end
+        queueRefresh()
+    end
+    ctx.removeLocal = function(key, legacy)
+        if legacy then
+            orderBook.removeLocal(key)
+            addon.market.remove(guildKey, key, orderClock())
+        else
+            addon.board.removeLocal(guildKey, key, orderClock())
+        end
+        addon.market.markRead(guildKey, key)
+        if updateOrderNotice then updateOrderNotice() end
+        queueRefresh()
+    end
+    ctx.legacyWithdraw = function(key)
+        orderBook.withdraw(key)
+        queueRefresh()
+    end
+    ctx.belongs = function(order) return orderBook.belongsToGuild(order, guildKey) end
+    ctx.legacyRead = function(key) if orderBook.markRead(key) and updateOrderNotice then updateOrderNotice() end end
+    ctx.legacySetDone = function(key, done)
+        orderBook.setDone(key, done, guildKey)
+        dispatchOrders()
+        queueRefresh()
+    end
+    ctx.legacySend = function(name, recipe, quantity, professionID)
+        if not database or guildKey ~= guildIdentity() then return end
+        local _, token = orderBook.packet(recipe, quantity)
+        if not token then return end
+        orderBook.track(token, name, recipe, quantity, professionID, roster[name] and roster[name].target or name, guildKey)
+        dispatchOrders()
+        queueRefresh()
+    end
+    ctx.create = function(fields)
+        if not ctx.ready() then return end
+        local order = addon.board.create(guildKey, player, fields, broadcastOrder)
+        queueRefresh()
+        return order
+    end
+    ctx.editOrder = function(order, fields)
+        if not ctx.ready() then return false end
+        local ok = addon.board.edit(guildKey, order, fields, broadcastOrder)
+        queueRefresh()
+        return ok
+    end
+    ctx.act = function(order, action, arg, text)
+        if not ctx.ready() then return end
+        addon.board.action(order, player, action, broadcastOrder, sendOrderMessage, orderClock(), arg, text, guildKey)
+        queueRefresh()
+    end
+    ctx.edit = function(order) orderDialog = addon.marketUI.openDialog(ctx, { order = order }) end
+    ctx.reorder = function(order) orderDialog = addon.marketUI.openDialog(ctx, { copy = order }) end
+    ctx.openCatalog = function() openBoardCatalog() end
+    addon.tourContext = function()
+        return { window = function() return window end, openTab = function(tab) addon.openMainTab(tab) end,
+            inCombat = uiInCombat, icon = addonIcon, button = button,
+            officer = function()
+                return addon.partnerMaster() or guildPermission("CanEditPublicNote") or guildPermission("CanEditMOTD")
+            end,
+            -- Opening these windows only shows them; nothing is saved by the tour. An already
+            -- open character setup is reused so unsaved choices are kept.
+            openSetup = function(reuse)
+                if reuse and setupDialog then setupDialog:Show(); return setupDialog end
+                showSetup()
+                return setupDialog
+            end,
+            openNotes = function() addon.marketUI.showNotes(ctx); return _G.ForeverGuildMarketNotes end,
+            openSettings = function()
+                local current = _G.ForeverGuildSettingsWindow
+                if current and current:IsShown() then return current end
+                showSettings()
+                return _G.ForeverGuildSettingsWindow
+            end,
+            setupWindow = function() return setupDialog end,
+            settingsWindow = function() return _G.ForeverGuildSettingsWindow end,
+            notesWindow = function() return _G.ForeverGuildMarketNotes end,
+            currentTab = function() return activeTab end,
+            mainShown = function() return window ~= nil and window:IsShown() end,
+            hideMain = function() if window then window:Hide() end end,
+            restoreMain = function(shown, tab)
+                if shown then addon.openMainTab(tab) elseif window then window:Hide() end
+            end,
+            -- Further ForeverGuild windows that are hidden during the tour.
+            otherWindows = function()
+                return { orderDialog, window and window.boardCatalog, window and window.groupComposer, exportFrame,
+                    _G.ForeverGuildMarketPrompt, _G.ForeverGuildLegacyOrders, orderMenu }
+            end }
+    end
+    -- Used by the settings window and the tour (defined before toggle()).
+    addon.openMainTab = function(tab)
+        if uiInCombat() then return end
+        if not window or not window:IsShown() then toggle() end
+        if not window then return end
+        activeTab = tab
+        refresh()
+    end
+    ctx.openTab = function(tab)
+        if uiInCombat() then return end
+        if not window or not window:IsShown() then toggle() end
+        if not window then return end
+        if window.setOrderTab then window.setOrderTab(tab) end
+        activeTab = "orders"
+        refresh()
+    end
+    ctx.openOrder = function(key)
+        if uiInCombat() then return end
+        if not window or not window:IsShown() then toggle() end
+        if not window or not window.selectOrder then return end
+        window.selectOrder(key)
+        activeTab = "orders"
+        refresh()
+    end
+    ctx.refresh = function() if activeTab == "orders" or activeTab == "board" then queueRefresh() end end
+    ctx.updateNotice = function() if updateOrderNotice then updateOrderNotice() end end
+    ctx.finder = function() return addon.finderContext() end
+    ctx.panel, ctx.contrastPanel, ctx.button, ctx.pageBackdrop = panel, contrastPanel, button, pageBackdrop
+    ctx.icon = addonIcon
+    ctx.inCombat = uiInCombat
+    addon.marketCtx = ctx
+    return ctx
 end
 
 local function captureBankGold()
@@ -5572,6 +5074,8 @@ startBankScan = function()
 end
 
 local function initializePlayer()
+    -- Saved data from an earlier version exists: an existing user, not a first start.
+    addon.existingUser = ForeverGuildDB ~= nil or ForeverGuildSettings ~= nil
     ForeverGuildDB = ForeverGuildDB or {}
     ForeverGuildSettings = ForeverGuildSettings or {}
     ForeverGuildRoles = ForeverGuildRoles or {}
@@ -5597,10 +5101,16 @@ local function initializePlayer()
     preloadRecipeItems()
     createMinimapIcon()
     createOrderNotice()
+    addon.marketUI.attach(addon.marketContext())
     updateGuildShortcut()
     after(5, requestSync)
     queueBackgroundScan(8)
     after(6, maybeShowSetup)
+    -- Existing users only get a hint; new accounts see the welcome window once.
+    after(9, function()
+        addon.marketContext()
+        if addon.tourContext and not uiInCombat() then addon.tour.maybeWelcome(addon.tourContext(), addon.existingUser) end
+    end)
     after(300 + math.random(0, 60), periodicSync)
     if orderBook then after(5, pollOrders) end
 end
@@ -5623,7 +5133,7 @@ local function handleItemData(itemID, success)
                 dialog.itemRefreshPending = true
                 after(.25, function()
                     dialog.itemRefreshPending = nil
-                    if dialog:IsShown() then dialog.refreshMaterials() end
+                    if dialog:IsShown() then addon.marketUI.updateDialog(addon.marketContext()) end
                 end)
             end
         end
@@ -5705,10 +5215,12 @@ local function handleGuildMessage(incomingPrefix, message, channel, sender)
 end
 
 local function closeCombatWindows()
-    for _, dialog in pairs({ window, settingsWindow, setupDialog, exportFrame,
-        orderDialog, orderMenu, window and window.boardCatalog, window and window.groupComposer }) do
-        if dialog:IsShown() then dialog:Hide() end
+    for _, dialog in pairs({ window, _G.ForeverGuildSettingsWindow, setupDialog, exportFrame,
+        orderDialog, orderMenu, window and window.boardCatalog, window and window.groupComposer,
+        _G.ForeverGuildMarketPrompt, _G.ForeverGuildLegacyOrders, _G.ForeverGuildMarketNotes }) do
+        if type(dialog) == "table" and dialog.IsShown and dialog:IsShown() then dialog:Hide() end
     end
+    if addon.tour then addon.tour.pauseForCombat() end
 end
 
 local function onEvent(_, event, ...)
@@ -5734,6 +5246,7 @@ local function onEvent(_, event, ...)
     elseif event == "SPELL_DATA_LOAD_RESULT" then
         local spellID, success = ...
         if success and addon.recipeCatalog[spellID] and not addon.recipeCatalog[spellID].name then
+            if addon.recipeFinder then addon.recipeFinder.invalidateItems() end
             local catalog = window and window.boardCatalog
             if catalog and catalog:IsShown() then catalog.queueItemRefresh() end
             queueRefresh()
@@ -5861,6 +5374,14 @@ SlashCmdList.FOREVERGUILD = function(message)
     end
     if message == "settings" then
         showSettings()
+        return
+    end
+    local bindRecipe = message:match("^bindcheck%s+#?(%d+)$")
+    if bindRecipe then
+        -- Diagnosis of the orderability decision for one recipe or spell ID.
+        local text = addon.recipeFinder.diagnose(tonumber(bindRecipe), nil, addon.finderContext())
+        print("ForeverGuild · " .. text)
+        diagnose("INFO", "bindcheck", text)
         return
     end
     if message == "setup" then

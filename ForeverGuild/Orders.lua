@@ -28,6 +28,8 @@ function orders.accept(sender, message, address, guild)
     if not token or #token > 24 or not validRecipe(recipe) or not validQuantity(quantity) then return end
     ForeverGuildOrders = ForeverGuildOrders or {}
     local key = sender .. "/direct/" .. token
+    -- Locally removed: acknowledge again so the sender stops, but never recreate it.
+    if addon.market and addon.market.isRemoved(guild, key) then return token, false end
     local previous = ForeverGuildOrders[key]
     if previous and (previous.guild or previous.statusGuild) == guild then return token, false end
     if previous and (previous.guild or previous.statusGuild) then return end
@@ -78,7 +80,7 @@ end
 function orders.hasPending(guild)
     if not guild then return false end
     for _, order in pairs(ForeverGuildOrders or {}) do
-        if order.outgoing and order.guild == guild and order.delivery ~= "confirmed" then return true end
+        if order.outgoing and order.guild == guild and order.delivery ~= "confirmed" and not order.withdrawn then return true end
     end
     return false
 end
@@ -87,7 +89,7 @@ function orders.dispatch(guild, members, send, now)
     if not guild then return false end
     local ready, changed = {}, false
     for key, order in pairs(ForeverGuildOrders or {}) do
-        if order.outgoing and order.guild == guild and order.delivery ~= "confirmed" then
+        if order.outgoing and order.guild == guild and order.delivery ~= "confirmed" and not order.withdrawn then
             local token = key:match("^outgoing/(%d+%-%d+)$")
             local member = members[order.recipient]
             local elapsed = order.lastAttempt and (now - order.lastAttempt) or math.huge
@@ -132,6 +134,19 @@ function orders.setDone(key, done, guild)
         order.statusVersion = (order.statusVersion or 0) + 1
         order.statusAttempt = nil
     end
+end
+
+-- Legacy sent order: stop delivering it. Once confirmed the old protocol cannot recall it.
+function orders.withdraw(key)
+    local order = ForeverGuildOrders and ForeverGuildOrders[key]
+    if not order or not order.outgoing or order.delivery == "confirmed" then return false end
+    order.withdrawn = true
+    return true
+end
+
+-- Local removal of a legacy order; the tombstone lives in Market.lua.
+function orders.removeLocal(key)
+    if ForeverGuildOrders then ForeverGuildOrders[key] = nil end
 end
 
 function orders.hasStatusPending(guild)
@@ -298,7 +313,7 @@ function orders.sharePending(guild, members, send, now)
     local batch = {}
     for key, order in pairs(ForeverGuildOrders or {}) do
         local token = key:match("^outgoing/(%d+%-%d+)$")
-        if order.guild == guild and order.outgoing and order.delivery ~= "confirmed"
+        if order.guild == guild and order.outgoing and order.delivery ~= "confirmed" and not order.withdrawn
             and members[order.recipient] and not members[order.recipient].online and validToken(token, now) and now - (order.lastShared or 0) >= 120 then
             batch[#batch + 1] = { order = order, token = token }
         end

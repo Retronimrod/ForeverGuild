@@ -21,7 +21,7 @@ read_globals = {
     "GetItemInfoInstant", "GetItemSubClassInfo", "GetLocale", "GetNormalizedRealmName",
     "GetNumGuildBankTabs", "GetNumGuildMembers", "GetProfessionInfo", "GetProfessions",
     "GetServerTime", "GetTalentTabInfo", "GetTime", "GuildBankFrame", "ITEM_QUALITY_COLORS",
-    "InCombatLockdown", "InviteUnit", "IsInGuild", "LoadAddOn", "MAX_GUILDBANK_SLOTS_PER_TAB",
+    "InCombatLockdown", "InviteUnit", "PlaySound", "SOUNDKIT", "UnitLevel", "GetInventoryItemLink", "GameTooltip_ShowCompareItem", "CloseDropDownMenus", "Menu", "IsInGuild", "LoadAddOn", "MAX_GUILDBANK_SLOTS_PER_TAB",
     "Minimap", "QueryGuildBankTab", "RAID_CLASS_COLORS", "CLASS_ICON_TCOORDS","SetCurrentGuildBankTab", "UIParent",
     "UISpecialFrames", "UnitAffectingCombat", "UnitClass", "UnitFactionGroup", "UnitFullName",
     "date", "geterrorhandler", "strlower", "time",
@@ -30,7 +30,7 @@ read_globals = {
 -- Vom Addon selbst gesetzte globale Namen (SavedVariables, Slash-Befehle).
 globals = {
     "ForeverGuildBackgroundScan", "ForeverGuildBankCache", "ForeverGuildBankGold",
-    "ForeverGuildBoard", "ForeverGuildBoardNotes", "ForeverGuildBoardRights", "ForeverGuildPartners", "ForeverGuildCharacter", "ForeverGuildDB",
+    "ForeverGuildBoard", "ForeverGuildBoardNotes", "ForeverGuildMarket", "ForeverGuildBoardRights", "ForeverGuildPartners", "ForeverGuildCharacter", "ForeverGuildDB",
     "ForeverGuildDiagnostics", "ForeverGuildDiscoveredRecipes", "ForeverGuildItemCache",
     "ForeverGuildLog", "ForeverGuildOrderRelays", "ForeverGuildOrderSequence",
     "ForeverGuildOrders", "ForeverGuildOwnRoles", "ForeverGuildRoleRecords",
