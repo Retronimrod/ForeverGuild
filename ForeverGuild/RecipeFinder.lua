@@ -1549,6 +1549,28 @@ end
 
 -- Trade status of a recipe group: TRADEABLE, NON_TRADEABLE, UNKNOWN or SERVICE. The crafted
 -- item decides, never the recipe item; without an output only enchantments count as service.
+-- General item and recipe search for farm runs (Groups & events). Deliberately separate
+-- from finder.query: the player wants to loot the item, so bind-on-pickup items and recipes
+-- stay included. The orderability check of crafting orders is not used or changed here.
+function finder.searchAll(ctx, textValue, limit, top)
+    local data = finder.ensureIndex(ctx)
+    local tokens = finder.parse(textValue or "")
+    local results = {}
+    for _, group in ipairs(data.groups) do
+        local ok = (#tokens > 0 or top ~= nil) and group.name ~= nil and (not top or group.top == top)
+        for _, token in ipairs(tokens) do
+            if ok and not finder.tokenMatches(group, token, ctx) then ok = false end
+        end
+        if ok then results[#results + 1] = group end
+    end
+    table.sort(results, function(a, b)
+        if (a.quality or 0) ~= (b.quality or 0) then return (a.quality or 0) > (b.quality or 0) end
+        return (a.name or "") < (b.name or "")
+    end)
+    while #results > (limit or 40) do table.remove(results) end
+    return results
+end
+
 function finder.tradeStatusOf(itemID, top)
     if itemID then
         if not addon.itemStats then return "UNKNOWN", "no item stats module" end

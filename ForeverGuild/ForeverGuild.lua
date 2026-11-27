@@ -5,7 +5,7 @@ local bankScan, startBankScan, scanVisibleBank, requestBankSnapshot
 local lastBankRequest, lastBankReply = -60, -60
 local showOrderMenu, showOrderDialog, orderMenu, orderDialog, orderChannel
 local orderNotice, updateOrderNotice
-local addonVersion = "0.9.65"
+local addonVersion = "0.9.66"
 local settingsWindow, minimapIcon, guildShortcut
 local updateGuildShortcut
 local prefix, rolePrefix = "ForeverGuild1", "ForeverGuildRole"
@@ -1315,6 +1315,19 @@ end
 
 local function refreshRosterView()
     window.rosterGuildName:SetText(guildKey and GetGuildInfo("player") or (L["No guild"]))
+    if window.rosterNextEvent then
+        local upcoming = guildKey and addon.eventsUI.upcoming(addon.eventContext(), 3) or {}
+        window.rosterNextEvent.events = upcoming
+        local first = upcoming[1]
+        window.rosterNextEvent:SetShown(first ~= nil)
+        if first then
+            local label = window.rosterNextEvent.label
+            local when = addon.eventsUI.when(first.starts, addon.eventContext().clock())
+            label:SetText(L["Next event: %s · %s"]:format(when, addon.eventsUI.titleOf(first)))
+            -- Narrow window: date only, the title stays in the tooltip; nothing is drawn on top.
+            if label:GetStringWidth() > window.rosterNextEvent:GetWidth() then label:SetText(L["Next event: %s"]:format(when)) end
+        end
+    end
     local stats, totalCount, onlineCount, master, officers = window.rosterGuildStats, 0, 0, nil, {}
     local outdated = 0
     for key, member in pairs(roster) do
@@ -1930,9 +1943,42 @@ local function buildRosterView()
     guildStats:SetScript("OnLeave", function() GameTooltip:Hide() end)
     window.rosterGuildStats = guildStats
     window.rosterGuildName:SetPoint("RIGHT", guildStats, "LEFT", -8, 0)
+    -- Compact hint to the next guild event (Groups & events); click opens its details.
+    -- Own area right of "Guild members", never on top of it.
+    window.rosterMembersLabel = heading(guildBanner, L["Guild members"], 63, -32)
+    local nextEvent = CreateFrame("Button", nil, guildBanner)
+    nextEvent:SetPoint("LEFT", window.rosterMembersLabel, "RIGHT", 18, 0)
+    nextEvent:SetPoint("RIGHT", guildStats, "LEFT", -10, 0)
+    nextEvent:SetHeight(16)
+    nextEvent.label = nextEvent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    nextEvent.label:SetAllPoints()
+    nextEvent.label:SetJustifyH("LEFT")
+    nextEvent.label:SetWordWrap(false)
+    nextEvent:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    nextEvent:SetScript("OnClick", function(self, mouse)
+        local first = self.events and self.events[1]
+        if not first then return end
+        if mouse == "RightButton" then addon.eventsUI.eventMenu(addon.eventContext(), first, self)
+        else addon.eventContext().openEvent(first.id) end
+    end)
+    nextEvent:SetScript("OnEnter", function(self)
+        if not self.events or #self.events == 0 then return end
+        local ectx = addon.eventContext()
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOMLEFT")
+        GameTooltip:SetText(L["UPCOMING GUILD EVENTS"])
+        for _, ev in ipairs(self.events) do
+            local counts = ev.rosterCache.counts
+            GameTooltip:AddLine(addon.eventsUI.when(ev.starts, ectx.clock()), 1, .82, .24)
+            GameTooltip:AddLine(addon.eventsUI.titleOf(ev) .. (counts.capacity and ("  ·  " .. L["%d/%d players"]:format(counts.total, counts.capacity)) or ""), 1, 1, 1)
+        end
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine(L["Click to open the next event. All events are on the bulletin board under Groups & events."], .8, .75, .65, true)
+        GameTooltip:Show()
+    end)
+    nextEvent:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    window.rosterNextEvent = nextEvent
     window.rosterGuildName:SetJustifyH("LEFT")
     window.rosterGuildName:SetWordWrap(false)
-    heading(guildBanner, L["Guild members"], 63, -32)
     local filter = CreateFrame("EditBox", nil, members, "InputBoxTemplate")
     filter:SetSize(352, 24)
     filter:SetPoint("TOPLEFT", 19, -74)
@@ -2401,6 +2447,8 @@ local function showSettings(pageId)
         end
         local market = addon.marketContext()
         addon.marketUI.registerSettings(S, market)
+        addon.eventsUI.registerSettings(S, addon.eventContext())
+        addon.bankUI.registerSettings(S, addon.bankContext())
         S.page("partners", "guild", "Partner guilds")
         S.add({ page = "partners", kind = "button", label = L["Guild management"], buttonLabel = L["Open partner guilds"],
             scope = "master", desc = L["Connections with partner guilds are set up by the guild master under Guild management."],
@@ -2663,14 +2711,6 @@ local function buildGuildAdmin()
             and ((officerGuid ~= nil and setNote ~= nil) or _G.GuildRosterSetOfficerNote ~= nil), reset)
     end
     filter:SetScript("OnTextChanged", window.refreshAdmin)
-end
-
-local function orderItemTooltip(frame)
-    local item = frame.entry
-    if not item or not item.itemID then return end
-    GameTooltip:SetOwner(frame, "ANCHOR_CURSOR")
-    GameTooltip:SetHyperlink("item:" .. item.itemID)
-    GameTooltip:Show()
 end
 
 local function materialRows(recipe, quantity)
@@ -3136,6 +3176,13 @@ function addon.partnerTick()
             end
         end
     end
+    for _, ev in pairs(addon.events.all(guildKey)) do
+        if not ev.stub and ev.partners and addon.events.active(ev, now) and roster[ev.owner]
+            and not addon.boardRights.hidden(guildKey, "G", ev.owner, ev.token) then
+            own[#own + 1] = { owner = ev.owner, token = ev.token, ends = ev.starts, closed = ev.status ~= "open",
+                activity = ev.dungeon, title = ev.title }
+        end
+    end
     if addon.partnerActive() then
         addon.guildPartners.relayEvents(guildKey, own, now, addon.sendPartnerMessage, broadcastOrder)
     end
@@ -3170,6 +3217,8 @@ local function pollOrders()
             function(key) return roster[key] and roster[key].online end, broadcastOrder, sendOrderMessage)
         addon.marketUI.tick(addon.marketContext())
         addon.boardNotes.tick(guildKey, player, orderClock(), addon.boardCan("news"), broadcastOrder)
+        addon.eventsUI.autoArchive(addon.eventContext())
+        addon.eventsUI.tick(addon.eventContext())
         addon.boardRights.tick(guildKey, player, roster[player] and roster[player].rankIndex == 0, orderClock(),
             function(kind) return addon.boardMayModerate(kind) end, broadcastOrder)
         if addon.partnerActive() then addon.guildPartners.tick(guildKey, orderClock(), addon.sendPartnerMessage) end
@@ -3254,6 +3303,13 @@ local function receiveOrderMessage(sender, message)
             queueRefresh()
             if window and window.admin and window.admin.rights and window.admin.rights:IsVisible() then window.admin.rights.load() end
         end
+        return
+    end
+    if not destination and boardPacket:sub(1, 1) == "E" and boardPacket:sub(3, 3) ~= ":" then
+        local ectx = addon.eventContext()
+        local changed, notes = addon.events.receive(guildKey, key, boardPacket, { player = player, now = orderClock(),
+            canPost = function(who) return addon.boardCan("group", who) and true or false end })
+        if changed then addon.eventsUI.received(ectx, notes) end
         return
     end
     if boardPacket:sub(1, 2) == "M:" then
@@ -3525,467 +3581,6 @@ local function openBoardCatalog()
     dialog.finder.refresh(true)
 end
 
-local function openGroupComposer(onPosted)
-    if uiInCombat() then return end
-    local dialog = window.groupComposer
-    if not dialog then
-        dialog = CreateFrame("Frame", "ForeverGuildGroupComposer", UIParent, "PortraitFrameTemplate")
-        window.groupComposer = dialog
-        table.insert(UISpecialFrames, "ForeverGuildGroupComposer")
-        dialog:SetSize(620, 530)
-        dialog:SetPoint("CENTER")
-        dialog:SetFrameStrata("FULLSCREEN_DIALOG")
-        dialog:SetClampedToScreen(true)
-        dialog:SetPortraitToAsset(addonIcon)
-        dialog:SetTitle(L["ForeverGuild · Dungeon Finder"])
-        local body = panel(dialog)
-        body:SetPoint("TOPLEFT", 12, -44)
-        body:SetPoint("BOTTOMRIGHT", -12, 13)
-        pageBackdrop(body, "GuildHall", 1.5, .65)
-
-        local roleBar = contrastPanel(body)
-        roleBar:SetPoint("TOPLEFT", 11, -10)
-        roleBar:SetPoint("TOPRIGHT", -11, -10)
-        roleBar:SetHeight(91)
-        heading(roleBar, L["My role"], 12, -12)
-        local controls, ownRole = {}, 3
-        local roleKeys = { "T", "H", "D" }
-        for i, role in ipairs(roles) do
-            local control = roleControl(roleBar, role, 130 + (i - 1) * 132, -7)
-            controls[i] = control
-            control:SetScript("OnClick", function()
-                ownRole = i
-                for index, other in ipairs(controls) do other:Select(index == i) end
-            end)
-            local caption = heading(roleBar, role.label, 0, 0)
-            caption:ClearAllPoints()
-            caption:SetPoint("TOP", control, "BOTTOM", 0, -3)
-        end
-
-        local content = contrastPanel(body)
-        content:SetPoint("TOPLEFT", roleBar, "BOTTOMLEFT", 0, -9)
-        content:SetPoint("TOPRIGHT", roleBar, "BOTTOMRIGHT", 0, -9)
-        content:SetPoint("BOTTOM", 0, 49)
-        local label = heading(content, "", 14, -12)
-        label:SetFontObject(GameFontNormalLarge)
-        local activityPane = CreateFrame("Frame", nil, content)
-        activityPane:SetAllPoints()
-        local form = CreateFrame("Frame", nil, content)
-        form:SetAllPoints()
-        local render, activityScroll = list(activityPane, 12, -45, -31, 12, 500, 57)
-
-        local function field(caption, y, bytes)
-            heading(form, caption, 14, y)
-            local input = CreateFrame("EditBox", nil, form, "InputBoxTemplate")
-            input:SetPoint("TOPLEFT", 20, y - 19)
-            input:SetPoint("TOPRIGHT", -17, y - 19)
-            input:SetHeight(26)
-            input:SetMaxBytes(bytes)
-            input:SetAutoFocus(false)
-            input:SetScript("OnEscapePressed", input.ClearFocus)
-            return input
-        end
-        local subject = field(L["Title"], -47, 52)
-        local schedule = field(L["Start · DD.MM.YYYY HH:MM (your local time)"], -98, 24)
-        local description = field(L["Details (optional)"], -149, 112)
-        heading(form, L["Role slots (including you)"], 14, -200)
-        local slotInputs = {}
-        for i, role in ipairs(roles) do
-            local x = 15 + (i - 1) * 145
-            heading(form, role.label, x, -229)
-            local input = CreateFrame("EditBox", nil, form, "InputBoxTemplate")
-            input:SetSize(40, 24)
-            input:SetPoint("TOPLEFT", x + 65, -224)
-            input:SetAutoFocus(false)
-            input:SetNumeric(true)
-            input:SetMaxLetters(2)
-            input:SetScript("OnEscapePressed", input.ClearFocus)
-            slotInputs[roleKeys[i]] = input
-        end
-        local errorText = orderText(form, 15, -263, 15)
-        errorText:SetTextColor(1, .65, .38)
-        local choosing, activityID = true, nil
-        local function eventTime()
-            local d, m, y, h, minute = schedule:GetText():match("^(%d%d)%.(%d%d)%.(%d%d%d%d)%s+(%d%d):(%d%d)$")
-            if not d then return end
-            local ok, timestamp = pcall(time, {day = tonumber(d), month = tonumber(m), year = tonumber(y),
-                hour = tonumber(h), min = tonumber(minute), sec = 0})
-            if ok and timestamp and date("%d.%m.%Y %H:%M", timestamp) == d .. "." .. m .. "." .. y .. " " .. h .. ":" .. minute then
-                return timestamp
-            end
-        end
-
-        local publish = button(body, L["Publish event"], 182, 0, 0, function()
-            if uiInCombat() or not orderChannel or not database or guildKey ~= guildIdentity() then return end
-            if not addon.boardCan("group") then return end
-            local slots, total = {}, 0
-            for role, input in pairs(slotInputs) do
-                local count = tonumber(input:GetText())
-                if not count or count < 0 or count > 40 or count % 1 ~= 0 then
-                    errorText:SetText(L["Enter a slot count for each role."])
-                    return
-                end
-                slots[role], total = count, total + count
-            end
-            local role = roleKeys[ownRole]
-            if total > 40 or slots[role] == 0 then
-                errorText:SetText(L["Use at most 40 slots and reserve a slot for your own role."])
-                return
-            end
-            local posted = addon.boardNotes.post(guildKey, player, "G", subject:GetText(), description:GetText(), eventTime(),
-                false, orderClock(), broadcastOrder, slots, role, activityID)
-            if posted then
-                if dialog.sharePartners:GetChecked() then
-                    local _, flags = addon.guildPartners.events(guildKey)
-                    flags[player .. "/" .. posted.token] = orderClock()
-                    broadcastOrder("P:S:" .. posted.token)
-                end
-                dialog:Hide()
-                dialog.onPosted()
-            else
-                errorText:SetText(L["Enter a title without a colon and a valid start within the next 30 days."])
-            end
-        end)
-        publish:ClearAllPoints()
-        publish:SetPoint("BOTTOMRIGHT", -12, 11)
-
-        local function showPicker(picking)
-            choosing = picking
-            activityPane:SetShown(picking)
-            form:SetShown(not picking)
-            publish:SetShown(not picking)
-            if dialog.sharePartners then dialog.sharePartners:SetShown(not picking) end
-            label:SetText(picking and (L["Choose dungeon"]) or "")
-            errorText:SetText("")
-        end
-        local sharePartners = CreateFrame("CheckButton", nil, body, "UICheckButtonTemplate")
-        sharePartners:SetPoint("BOTTOMLEFT", 136, 12)
-        heading(sharePartners, L["Also for partner guilds"], 28, -7)
-        dialog.sharePartners = sharePartners
-        local back = button(body, L["Back"], 117, 0, 0, function()
-            if choosing then dialog:Hide() else showPicker(true) end
-        end)
-        back:ClearAllPoints()
-        back:SetPoint("BOTTOMLEFT", 12, 11)
-
-        local rows = {}
-        for _, dungeon in ipairs(addon.groupDungeons) do
-            local name = dungeon[de and 1 or 2]
-            local details = dungeon[de and 3 or 4] .. " · " .. (L["Level "]) .. dungeon[5]
-            local id = dungeon[6]
-            rows[#rows + 1] = { text = name, subtitle = details, boardCard = true,
-                banner = ("Interface\\AddOns\\ForeverGuild\\Art\\Dungeon%02d"):format(id),
-                action = function()
-                    activityID = id
-                    subject:SetText(name)
-                    showPicker(false)
-                    label:SetText(details)
-                end }
-        end
-        render(rows)
-        dialog.reset = function()
-            ownRole = 3
-            for i, role in ipairs(roles) do
-                if hasRole(memberMask(player), role.bit) then ownRole = i; break end
-            end
-            for i, control in ipairs(controls) do control:Select(i == ownRole) end
-            slotInputs.T:SetText("1")
-            slotInputs.H:SetText("1")
-            slotInputs.D:SetText("3")
-            description:SetText("")
-            schedule:SetText(date("%d.%m.%Y", orderClock() + 86400) .. " 20:00")
-            activityID = nil
-            activityScroll:SetVerticalScroll(0)
-            showPicker(true)
-        end
-    end
-    dialog.onPosted = onPosted
-    dialog.reset()
-    dialog:Show()
-end
-
-local function buildBoardNotes(page)
-    local function dungeonFor(note)
-        if note.activity then return addon.getGroupDungeon(note.activity) end
-        local title = utf8Lower(note.title)
-        for _, dungeon in ipairs(addon.groupDungeons) do
-            if title == utf8Lower(dungeon[1]) or title == utf8Lower(dungeon[2]) then return dungeon end
-        end
-    end
-
-    local function groupBanner(note, dungeon)
-        if dungeon then return ("Dungeon%02d"):format(dungeon[6]) end
-        local title = utf8Lower(note.title)
-        local text = utf8Lower(note.text)
-        if title:find("schwarzfels", 1, true) or title:find("blackrock", 1, true)
-            or text:match("^schwarzfels%s") or text:match("^blackrock mountain%s") then
-            return "BlackrockHall"
-        end
-        return "DungeonHall"
-    end
-
-    local function titleFor(note, dungeon)
-        if dungeon and (note.title == dungeon[1] or note.title == dungeon[2]) then
-            return dungeon[de and 1 or 2]
-        end
-        return note.title
-    end
-
-    local function groupMemberTooltip(row)
-        local key = row.entry and row.entry.member
-        local member = key and roster[key]
-        if not member then return end
-        local color = RAID_CLASS_COLORS and RAID_CLASS_COLORS[member.class] or gold
-        GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
-        GameTooltip:SetText(member.displayName, color.r, color.g, color.b)
-        GameTooltip:AddLine((L["Level %s · %s"]):format(
-            member.level or "–", member.className or "–"), 1, .91, .74)
-        local spec = specName(member.class, ownSpec(key))
-        GameTooltip:AddDoubleLine(L["Specialization"],
-            spec or (L["Not set"]))
-        GameTooltip:AddDoubleLine(L["Guild rank"], member.rank or "–")
-        if member.zone and member.zone ~= "" and member.online then
-            GameTooltip:AddDoubleLine(L["Zone"], member.zone)
-        end
-        GameTooltip:AddDoubleLine("Status", member.online and "Online" or "Offline")
-        local note = readGuildNote(key, false)
-        if note and note ~= "" then
-            GameTooltip:AddLine((L["Guild note: "]) .. note, .83, .77, .65, true)
-        end
-        GameTooltip:Show()
-    end
-
-    local pane = contrastPanel(page)
-    pane:SetPoint("TOPLEFT", 17, -75)
-    pane:SetPoint("BOTTOMRIGHT", -17, 17)
-    local left = contrastPanel(pane)
-    left:SetPoint("TOPLEFT", 8, -8)
-    left:SetPoint("BOTTOMLEFT", 8, 8)
-    left:SetWidth(335)
-    window.groupList = left
-    local render = list(left, 8, -8, -30, 8, 299, 53)
-    local detail = contrastPanel(pane)
-    detail:SetPoint("TOPLEFT", left, "TOPRIGHT", 8, 0)
-    detail:SetPoint("BOTTOMRIGHT", -8, 8)
-    local banner = detail:CreateTexture(nil, "ARTWORK", nil, -3)
-    banner:SetPoint("TOPLEFT", 3, -3)
-    banner:SetPoint("TOPRIGHT", -3, -3)
-    banner:SetHeight(154)
-    detail:HookScript("OnSizeChanged", function(_, width)
-        addon.fitDungeonArtwork(banner, width - 6, 154)
-    end)
-    banner:SetAlpha(.83)
-    local shade = detail:CreateTexture(nil, "ARTWORK", nil, -2)
-    shade:SetAllPoints(banner)
-    shade:SetColorTexture(1, 1, 1, 1)
-    shade:SetGradient("HORIZONTAL", CreateColor(.045, .033, .025, .98), CreateColor(.045, .033, .025, .14))
-    local edge = detail:CreateTexture(nil, "ARTWORK", nil, -1)
-    edge:SetPoint("TOPLEFT", banner, "BOTTOMLEFT")
-    edge:SetPoint("TOPRIGHT", banner, "BOTTOMRIGHT")
-    edge:SetHeight(1)
-    edge:SetColorTexture(.49, .34, .18, .8)
-    local title = orderText(detail, 16, -18, 16)
-    title:SetFontObject(GameFontNormalLarge)
-    local information = orderText(detail, 14, -48, 14)
-    local body = orderText(detail, 14, -95, 14)
-    local signup = contrastPanel(detail)
-    signup:SetPoint("TOPLEFT", 12, -174)
-    signup:SetPoint("BOTTOMRIGHT", -12, 52)
-    heading(signup, L["Sign-ups"], 10, -10)
-    local renderSignups = list(signup, 8, -29, -28, 7, 360, 25, groupMemberTooltip)
-    local function memberRow(key, suffix)
-        local member = roster[key]
-        local color = member and RAID_CLASS_COLORS and RAID_CLASS_COLORS[member.class]
-        local label = (member and member.displayName or key) .. (suffix or "")
-        if member and member.level then label = label .. "   ·   " .. (L["Lv. "]) .. member.level end
-        return { text = label, color = color, member = key, labelOffset = 12 }
-    end
-
-    local selection
-    local post = button(detail, L["Plan dungeon run"], 190, 0, 0, function()
-        openGroupComposer(function() pane.refresh() end)
-    end)
-    post:ClearAllPoints()
-    post:SetPoint("BOTTOMLEFT", 11, 12)
-    local roleNames = { T = L["Tank"], H = L["Healer"], D = L["DPS"] }
-    local roleOrder = { "T", "H", "D" }
-    local selectedRole, previousNote
-    local rolePicker = button(detail, "", 128, 0, 0, function()
-        local note = addon.boardNotes.records(guildKey)[selection]
-        if not note or not note.slots then return end
-        local start = 0
-        for i, role in ipairs(roleOrder) do if role == selectedRole then start = i end end
-        for i = 1, #roleOrder do
-            local role = roleOrder[(start + i - 1) % #roleOrder + 1]
-            if note.slots[role] > 0 then selectedRole = role; break end
-        end
-        pane.refresh()
-    end)
-    rolePicker:ClearAllPoints()
-    rolePicker:SetPoint("BOTTOMRIGHT", -135, 12)
-    local reply = button(detail, "", 118, 0, 0, function()
-        local note = addon.boardNotes.records(guildKey)[selection]
-        if note and orderChannel and guildKey == guildIdentity() then
-            addon.boardNotes.reply(note, player, orderClock(), broadcastOrder, note.slots and selectedRole)
-            pane.refresh()
-        end
-    end)
-    reply:ClearAllPoints()
-    reply:SetPoint("BOTTOMRIGHT", -11, 12)
-    local remove = button(detail, L["Unpin"], 128, 0, 0, function()
-        local note = addon.boardNotes.records(guildKey)[selection]
-        if note and orderChannel and guildKey == guildIdentity() then
-            if note.owner == player then addon.boardNotes.close(note, player, broadcastOrder)
-            else addon.boardModerate(note.kind, note.owner, note.token) end
-            pane.refresh()
-        end
-    end)
-    remove:ClearAllPoints()
-    remove:SetPoint("BOTTOMRIGHT", -11, 12)
-
-    local function name(member)
-        return (roster[member] and roster[member].displayName) or member
-    end
-    local lastGuild
-    pane.refresh = function()
-        if lastGuild ~= guildKey then
-            selection, lastGuild = nil, guildKey
-        end
-        local records = {}
-        for id, note in pairs(addon.boardNotes.records(guildKey)) do records[id] = note end
-        local known = guildKey and addon.guildPartners.store(guildKey).known or {}
-        for id, event in pairs(guildKey and addon.guildPartners.events(guildKey) or {}) do
-            local partner = known[event.from]
-            records["partner/" .. id] = { owner = event.owner, token = event.token, kind = "G", ends = event.ends,
-                closed = event.closed, title = event.title, text = "", replies = {}, activity = event.activity,
-                partnerGuild = partner and partner.name or "?" }
-        end
-        local now, keys, rows = orderClock(), {}, {}
-        local found
-        for id, note in pairs(records) do
-            if note.kind == "G" and not note.closed and note.ends > now and (roster[note.owner] or note.partnerGuild)
-                and not addon.boardRights.hidden(guildKey, note.kind, note.owner, note.token) then
-                keys[#keys + 1] = id
-                if selection == id then found = true end
-            end
-        end
-        table.sort(keys, function(a, b)
-            if records[a].ends == records[b].ends then return a < b end
-            return records[a].ends < records[b].ends
-        end)
-        if not found then selection = keys[1] end
-        for _, id in ipairs(keys) do
-            local note = records[id]
-            local dungeon = dungeonFor(note)
-            rows[#rows + 1] = { text = titleFor(note, dungeon), boardCard = true,
-                banner = dungeon and ("Interface\\AddOns\\ForeverGuild\\Art\\Dungeon%02d"):format(dungeon[6]),
-                icon = "Interface\\AddOns\\ForeverGuild\\Art\\" .. "TabRoster",
-                subtitle = date("%d.%m. %H:%M", note.ends) .. "  ·  " .. name(note.owner)
-                    .. (note.partnerGuild and ("  ·  " .. note.partnerGuild) or ""),
-                selected = selection == id,
-                action = function() selection = id; pane.refresh() end }
-        end
-        if #rows == 0 then rows[1] = { text = L["No dungeon events planned."], color = muted } end
-        render(rows)
-        local note = records[selection]
-        local showBanner = note ~= nil
-        local dungeon = showBanner and dungeonFor(note)
-        banner:SetShown(showBanner)
-        shade:SetShown(showBanner)
-        edge:SetShown(showBanner)
-        if showBanner then
-            banner:SetTexture("Interface\\AddOns\\ForeverGuild\\Art\\" .. groupBanner(note, dungeon))
-            addon.fitDungeonArtwork(banner, detail:GetWidth() - 6, 154)
-        end
-        title:SetText(note and titleFor(note, dungeon) or "")
-        information:SetText(note and ((L["By "]) .. name(note.owner)
-            .. ("\n" .. date("%d.%m.%Y %H:%M", note.ends) .. (L[" · local time"]))) or "")
-        local dungeonDetails = dungeon and (dungeon[de and 3 or 4] .. " · "
-            .. (L["Level "]) .. dungeon[5])
-        local details = note and note.text or ""
-        if note and note.partnerGuild then
-            details = (L["Event of partner guild %s. Sign up by whispering the organizer."]):format(note.partnerGuild)
-        end
-        if dungeonDetails then
-            if not note.activity then
-                local german = dungeon[3] .. " · Stufe " .. dungeon[5]
-                local english = dungeon[4] .. " · Level " .. dungeon[5]
-                for _, prefix in ipairs({german, english}) do
-                    if details == prefix or details:sub(1, #prefix + 1) == prefix .. "\n" then
-                        details = details:sub(#prefix + 2)
-                        break
-                    end
-                end
-            end
-            details = dungeonDetails .. (details ~= "" and ("\n" .. details) or "")
-        end
-        body:SetText(details)
-        signup:SetShown(note ~= nil)
-        local members, placed = {}, {}
-        if note then
-            local queue, assigned, counts = addon.boardNotes.placements(note, function(member) return roster[member] ~= nil end)
-            placed = assigned
-            if note.slots then
-                for _, role in ipairs(roleOrder) do
-                    if note.slots[role] > 0 then
-                        members[#members + 1] = { text = ("%s   %d / %d"):format(roleNames[role], counts[role], note.slots[role]),
-                            category = true, color = counts[role] < note.slots[role] and gold or {r=.64,g=.83,b=.68} }
-                    end
-                    if note.ownerRole == role then
-                        members[#members + 1] = memberRow(note.owner, L[" · Organizer"])
-                    end
-                    for _, entry in ipairs(queue) do
-                        if entry.confirmed and entry.reply.role == role then members[#members + 1] = memberRow(entry.member) end
-                    end
-                end
-                local waitlist = false
-                for _, entry in ipairs(queue) do
-                    if not entry.confirmed then
-                        if not waitlist then
-                            members[#members + 1] = { text = L["Waitlist"], category = true }
-                            waitlist = true
-                        end
-                        local role = roleNames[entry.reply.role] or (L["Role missing"])
-                        members[#members + 1] = memberRow(entry.member, " · " .. role)
-                    end
-                end
-            else
-                members[1] = memberRow(note.owner, L[" · Organizer"])
-                for _, entry in ipairs(queue) do members[#members + 1] = memberRow(entry.member) end
-            end
-        end
-        renderSignups(members)
-        local answer = note and note.replies[player]
-        if previousNote ~= selection then
-            previousNote, selectedRole = selection, nil
-        end
-        if note and note.slots and (not selectedRole or note.slots[selectedRole] == 0) then
-            for _, role in ipairs({"D", "T", "H"}) do
-                if note.slots[role] > 0 then selectedRole = role; break end
-            end
-        end
-        rolePicker:SetShown(note ~= nil and note.slots ~= nil and note.owner ~= player and not (answer and answer.joined))
-        rolePicker:SetText((L["Role: "]) .. (roleNames[selectedRole] or "–"))
-        if answer and answer.joined and note.slots and not placed[player] then
-            reply:SetText(L["Leave waitlist"])
-        else
-            reply:SetText(answer and answer.joined and (L["Leave"]) or (L["Join"]))
-        end
-        reply:SetShown(note ~= nil and note.owner ~= player)
-        remove:SetText(L["Cancel event"])
-        if note and note.owner ~= player then remove:SetText(L["Hide"]) end
-        remove:SetShown(note ~= nil and (note.owner == player or addon.boardMayModerate(note.kind)))
-        reply:SetEnabled(not not orderChannel)
-        remove:SetEnabled(not not orderChannel)
-        if note and note.partnerGuild then
-            reply:Hide(); remove:Hide(); rolePicker:Hide()
-        end
-        post:SetShown(addon.boardCan("group"))
-        post:SetEnabled(database ~= nil and not not orderChannel)
-    end
-    return pane, pane.refresh
-end
-
 function addon.showHiddenPosts(parent)
     local dialog = addon.hiddenDialog
     if not dialog then
@@ -4038,8 +3633,9 @@ local function buildBoard()
     heading(page, L["Bulletin board"], 18, -14):SetFontObject(GameFontNormalLarge)
 
     local section = "orders"
-    local notesPane, refreshNotes = buildBoardNotes(page)
+    local notesPane = addon.eventsUI.build(page, addon.eventContext())
     window.boardNotes = notesPane
+    window.eventsView = notesPane
     local rail = page:CreateTexture(nil, "ARTWORK")
     rail:SetPoint("TOPLEFT", 18, -38)
     rail:SetPoint("TOPRIGHT", -18, -38)
@@ -4057,7 +3653,7 @@ local function buildBoard()
     local sections = {}
     for index, entry in ipairs({
         { "orders", L["Crafting orders"], "TabOrders" },
-        { "G", L["Find a group"], "TabRoster" },
+        { "G", L["Groups & events"], "TabRoster" },
     }) do
         local key, caption, asset = entry[1], entry[2], entry[3]
         local tab = CreateFrame("Button", nil, page)
@@ -4104,7 +3700,7 @@ local function buildBoard()
         local showOrders = section == "orders"
         notesPane:SetShown(not showOrders)
         orderView:SetShown(showOrders)
-        if not showOrders then refreshNotes(); return end
+        if not showOrders then addon.eventsUI.refresh(); return end
         orderView.refresh()
     end
 end
@@ -4120,221 +3716,12 @@ local function buildGuildBank()
     window.bank = page
     page:SetPoint("TOPLEFT", 14, -46)
     page:SetPoint("BOTTOMRIGHT", -14, 13)
+    -- No guild vault artwork yet: the existing backdrop stays (see README for the wanted asset).
     pageBackdrop(page, "GuildAdministration", 1.5, .88)
-    local pane = contrastPanel(page)
-    pane:SetPoint("TOPLEFT", 10, -10)
-    pane:SetPoint("BOTTOMRIGHT", -10, 10)
-    local title = heading(pane, L["Guild bank"], 14, -12)
-    title:SetFontObject(GameFontNormalLarge)
-    local hint = orderText(pane, 14, -37, 14)
-    local balance = heading(pane, "", 0, 0)
-    balance:ClearAllPoints()
-    balance:SetPoint("TOPRIGHT", -15, -14)
-    balance:SetFontObject(GameFontNormalLarge)
-    local searchBank = CreateFrame("EditBox", nil, pane, "InputBoxTemplate")
-    searchBank:SetSize(260, 24)
-    searchBank:SetPoint("TOPLEFT", 18, -75)
-    searchBank:SetAutoFocus(false)
-    searchBank:SetScript("OnEscapePressed", searchBank.ClearFocus)
-    heading(pane, L["Find an item"], 289, -81)
-    local sync = button(pane, L["Request guild snapshot"], 170, 0, 0, requestBankSnapshot)
-    sync:ClearAllPoints()
-    sync:SetPoint("TOPRIGHT", -15, -74)
-    local read = button(pane, L["Scan open vault"], 140, 0, 0, function()
-        if scanVisibleBank() then window.refreshBank() end
-    end)
-    read:ClearAllPoints()
-    read:SetPoint("RIGHT", sync, "LEFT", -8, 0)
-    local settings = contrastPanel(pane)
-    settings:SetPoint("TOPRIGHT", -12, -110)
-    settings:SetPoint("BOTTOMRIGHT", -12, 12)
-    settings:SetWidth(233)
-    heading(settings, L["Bank settings"], 12, -12)
-    local access = orderText(settings, 12, -54, 12)
-    local native = button(settings, L["Show WoW guild vault"], 204, 12, -26, function()
-        if GuildBankFrame and GuildBankFrame:IsShown() then window:Hide() end
-    end)
-    local inventory = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
-    inventory:SetPoint("TOPLEFT", 12, -111)
-    inventory:SetPoint("BOTTOMRIGHT", settings, "BOTTOMLEFT", -29, 0)
-    -- Tour target: bank search and inventory together.
-    window.bankFocus = CreateFrame("Frame", nil, pane)
-    window.bankFocus:SetPoint("TOPLEFT", searchBank, "TOPLEFT", -6, 4)
-    window.bankFocus:SetPoint("BOTTOMRIGHT", inventory, "BOTTOMRIGHT", 22, 0)
-    local content = CreateFrame("Frame", nil, inventory)
-    content:SetSize(1, 1)
-    inventory:SetScrollChild(content)
-    local blocks, slots = {}, {}
-    local chosen, lastGuild
-    local tabButtons = list(settings, 10, -180, -30, 10, 185, 27)
-    local function slotFor(index)
-        if slots[index] then return slots[index] end
-        local slot = CreateFrame("Button", nil, content, "BackdropTemplate")
-        slot:SetSize(37, 37)
-        slot:SetBackdrop({bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 8})
-        slot:SetBackdropColor(.12, .08, .05, 1)
-        slot:SetBackdropBorderColor(.60, .40, .19, 1)
-        slot.icon = slot:CreateTexture(nil, "ARTWORK")
-        slot.icon:SetPoint("TOPLEFT", 3, -3)
-        slot.icon:SetPoint("BOTTOMRIGHT", -3, 3)
-        slot.icon:SetTexCoord(.06, .94, .06, .94)
-        slot.amount = slot:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
-        slot.amount:SetPoint("BOTTOMRIGHT", -3, 2)
-        slot:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
-        slot:SetScript("OnEnter", orderItemTooltip)
-        slot:SetScript("OnLeave", function() GameTooltip:Hide() end)
-        slots[index] = slot
-        return slot
-    end
-    window.refreshBank = function()
-        local liveGuild = guildIdentity()
-        if liveGuild ~= lastGuild then
-            lastGuild, chosen = liveGuild, nil
-            searchBank:ClearFocus()
-            inventory:SetVerticalScroll(0)
-        end
-        local tabs = guildBank.snapshot(liveGuild) or {}
-        local money = guildBank.balance(liveGuild)
-        balance:SetText(money and guildBank.formatBalance(money.copper)
-            or (L["Balance  –"]))
-        if not liveGuild then
-            hint:SetText(L["You are not in a guild."])
-        elseif not guildBank.available() then
-            hint:SetText(L["The guild bank API is unavailable."])
-        else
-            hint:SetText(L["Stock is synced when the guild vault is opened."])
-        end
-        local indexList, tabRows = {}, {}
-        for index in pairs(tabs) do indexList[#indexList + 1] = index end
-        table.sort(indexList)
-        if not tabs[chosen] then chosen = indexList[1] end
-        local selectedTab = tabs[chosen]
-        local viewable, deposit, remaining
-        if chosen and guildBankOpen and GetGuildBankTabInfo then
-            local _, _, canView, canDeposit, _, withdrawals = GetGuildBankTabInfo(chosen)
-            viewable, deposit, remaining = canView, canDeposit, withdrawals
-        end
-        native:SetEnabled(GuildBankFrame and GuildBankFrame:IsShown() or false)
-        local function yesNo(value)
-            if value == nil then return "–" end
-            return (value == true or value == 1) and (L["Yes"]) or (L["No"])
-        end
-        access:SetText((L["Selected tab\nViewable  %s\nDeposits  %s\nWithdrawals left  %s\n\nBank tabs"]):format(
-            yesNo(viewable), yesNo(deposit), remaining == -1 and (L["Unlimited"]) or tostring(remaining or "–")))
-        for _, index in ipairs(indexList) do
-            local tab = tabs[index]
-            tabRows[#tabRows + 1] = { text = tab.name, icon = tab.icon, selected = index == chosen,
-                action = function() chosen = index; inventory:SetVerticalScroll(0); window.refreshBank() end }
-        end
-        tabButtons(tabRows)
-        local groups, groupOrder = {}, {}
-        local query = utf8Lower(searchBank:GetText())
-        local instantInfo = C_Item and C_Item.GetItemInfoInstant or GetItemInfoInstant
-        local fullInfo = C_Item and C_Item.GetItemInfo or GetItemInfo
-        local getClass = C_Item and C_Item.GetItemClassInfo or GetItemClassInfo
-        local getSubclass = C_Item and C_Item.GetItemSubClassInfo or GetItemSubClassInfo
-        for _, index in ipairs(indexList) do
-            if query ~= "" or index == chosen then
-                local localTab = tabs[index]
-                local tab = localTab.remote and localTab.remote.at > localTab.at and localTab.remote or localTab
-                for _, item in ipairs(tab.items) do
-                    local id = item.id or tonumber(item.link:match("|Hitem:(%d+)"))
-                    if id then
-                        local name = item.link and item.link:match("%[(.-)%]")
-                        local class, subclass, icon, classID, subclassID
-                        if instantInfo then
-                            local _, label, sublabel, _, texture, kind, subkind = instantInfo(id)
-                            class, subclass, icon, classID, subclassID = label, sublabel, texture, kind, subkind
-                            if classID and getClass then class = getClass(classID) or class end
-                            if classID and subclassID and getSubclass then subclass = getSubclass(classID, subclassID) or subclass end
-                        end
-                        if fullInfo and (not name or not class or not subclass) then
-                            local itemName, _, _, _, _, label, sublabel = fullInfo(id)
-                            name, class, subclass = name or itemName, class or label, subclass or sublabel
-                            if not itemName then pendingItems[id] = true end
-                        end
-                        name = name or ("Item #%d"):format(id)
-                        if utf8Lower(name):find(query, 1, true) then
-                            local pending = type(class) ~= "string" or class == ""
-                            class = pending and (L["Uncategorized"]) or class
-                            local key = class
-                            local group = groups[key]
-                            if not group then
-                                group = { name = class, pending = pending, sections = {}, order = {} }
-                                groups[key] = group
-                                groupOrder[#groupOrder + 1] = group
-                            end
-                            if pending or type(subclass) ~= "string" or subclass == class then subclass = "" end
-                            if not group.sections[subclass] then
-                                group.sections[subclass] = {}
-                                group.order[#group.order + 1] = subclass
-                            end
-                            local section = group.sections[subclass]
-                            section[#section + 1] = { itemID = id, name = name, quantity = item.quantity, icon = item.icon or icon }
-                        end
-                    end
-                end
-            end
-        end
-        table.sort(groupOrder, function(a, b)
-            if a.pending ~= b.pending then return not a.pending end
-            return utf8Lower(a.name) < utf8Lower(b.name)
-        end)
-        local width = math.max(80, inventory:GetWidth())
-        content:SetWidth(width)
-        local columns = math.max(1, math.floor((width - 16) / 42))
-        local y, used, labels = 9, 0, 0
-        local function caption(text, secondary)
-            labels = labels + 1
-            if not blocks[labels] then blocks[labels] = heading(content, "", 0, 0) end
-            local label = blocks[labels]
-            label:ClearAllPoints()
-            label:SetPoint("TOPLEFT", secondary and 16 or 9, -y)
-            label:SetFontObject(secondary and GameFontHighlightSmall or GameFontNormal)
-            label:SetText(text)
-            label:Show()
-            y = y + 21
-        end
-        if query ~= "" then
-            caption(L["Search results across all tabs"])
-        elseif selectedTab then
-            local current = selectedTab.remote and selectedTab.remote.at > selectedTab.at and selectedTab.remote or selectedTab
-            caption(current.name .. "  ·  " .. date("%d.%m.%Y %H:%M", current.at))
-        end
-        for _, group in ipairs(groupOrder) do
-            caption(group.name)
-            table.sort(group.order, function(a, b) return utf8Lower(a) < utf8Lower(b) end)
-            for _, section in ipairs(group.order) do
-                local items = group.sections[section]
-                table.sort(items, function(a, b) return utf8Lower(a.name) < utf8Lower(b.name) end)
-                if section ~= "" then caption(section, true) end
-                for index, item in ipairs(items) do
-                    used = used + 1
-                    local slot = slotFor(used)
-                    slot.entry = item
-                    slot:ClearAllPoints()
-                    slot:SetPoint("TOPLEFT", 8 + ((index - 1) % columns) * 42, -y - math.floor((index - 1) / columns) * 42)
-                    slot.icon:SetTexture(item.icon or 134400)
-                    slot.amount:SetText(item.quantity > 1 and tostring(item.quantity) or "")
-                    slot:Show()
-                end
-                y = y + math.ceil(#items / columns) * 42 + 8
-            end
-            y = y + 6
-        end
-        if used == 0 then
-            caption(query ~= "" and (L["No matching items."])
-                or selectedTab and (L["This tab is empty."])
-                or (L["No bank tabs scanned yet."]))
-        end
-        for i = used + 1, #slots do slots[i]:Hide() end
-        for i = labels + 1, #blocks do blocks[i]:Hide() end
-        content:SetHeight(math.max(1, y + 10))
-    end
-    inventory:HookScript("OnSizeChanged", function()
-        if activeTab == "bank" then queueRefresh() end
-    end)
-    searchBank:SetScript("OnTextChanged", window.refreshBank)
+    local bankView = addon.bankUI.build(page, addon.bankContext())
+    window.bankView = bankView
+    window.bankFocus = bankView.focus
+    window.refreshBank = function() addon.bankUI.refresh() end
 end
 
 local function buildHelp()
@@ -4954,7 +4341,8 @@ function addon.marketContext()
             end,
             -- Further ForeverGuild windows that are hidden during the tour.
             otherWindows = function()
-                return { orderDialog, window and window.boardCatalog, window and window.groupComposer, exportFrame,
+                return { orderDialog, window and window.boardCatalog, _G.ForeverGuildEventWizard, _G.ForeverGuildEventSignup,
+                    _G.ForeverGuildEventConfirm, _G.ForeverGuildEventMessage, _G.ForeverGuildEventNotice, exportFrame,
                     _G.ForeverGuildMarketPrompt, _G.ForeverGuildLegacyOrders, orderMenu }
             end }
     end
@@ -4989,6 +4377,164 @@ function addon.marketContext()
     ctx.icon = addonIcon
     ctx.inCombat = uiInCombat
     addon.marketCtx = ctx
+    return ctx
+end
+
+-- Context for the guild bank page (BankUI.lua): display and the existing sync actions only.
+function addon.bankContext()
+    if addon.bankCtx then return addon.bankCtx end
+    local ctx = {}
+    ctx.guild = function() return guildKey end
+    ctx.guildName = function() return guildKey and (GetGuildInfo("player") or guildKey) or "" end
+    ctx.clock = orderClock
+    ctx.lower = utf8Lower
+    ctx.button = button
+    ctx.displayName = function(name)
+        local member = name and (roster[name] or roster[fullName(name)])
+        return member and member.displayName or (name and name:match("^[^-]+")) or "–"
+    end
+    ctx.vaultOpen = function() return guildBankOpen and true or false end
+    ctx.scanVault = function() return scanVisibleBank() end
+    ctx.requestSnapshot = function() requestBankSnapshot() end
+    ctx.openSettings = function() if not uiInCombat() then showSettings("guildBankView") end end
+    addon.bankCtx = ctx
+    return ctx
+end
+
+-- Context for Groups & events (EventsUI.lua, EventWizard.lua).
+function addon.eventContext()
+    if addon.eventCtx then return addon.eventCtx end
+    local market = addon.marketContext()
+    local ctx = {}
+    local function member(name) return name and (roster[name] or roster[fullName(name)]) end
+    ctx.player = function() return player end
+    ctx.guild = function() return guildKey end
+    ctx.clock = orderClock
+    ctx.ready = function() return database ~= nil and orderChannel ~= nil and orderChannel ~= false and guildKey == guildIdentity() end
+    ctx.canPost = function() return guildKey ~= nil and addon.boardCan("group") and true or false end
+    ctx.mayModerate = function() return guildKey ~= nil and addon.boardMayModerate("G") and true or false end
+    ctx.moderate = function(ev) addon.boardModerate("G", ev.owner, ev.token) end
+    ctx.hidden = function(ev) return guildKey ~= nil and addon.boardRights.hidden(guildKey, "G", ev.owner, ev.token) ~= nil end
+    ctx.member = member
+    ctx.isMember = function(name) return name == player or roster[name] ~= nil or not next(roster) end
+    ctx.displayName = market.displayName
+    ctx.whisper = market.whisper
+    ctx.canInvite = function() return (C_PartyInfo and C_PartyInfo.InviteUnit or InviteUnit) ~= nil end
+    -- Inviting always needs the organizer's click; nothing is sent in the background.
+    ctx.invite = function(name)
+        local invite = C_PartyInfo and C_PartyInfo.InviteUnit or InviteUnit
+        local entry = member(name)
+        if invite and entry and entry.online then invite(entry.target or name) end
+    end
+    ctx.send = function(packet) return broadcastOrder(packet) end
+    ctx.lower = utf8Lower
+    ctx.myLevel = function() return UnitLevel and UnitLevel("player") or 1 end
+    ctx.myRoles = function()
+        local mask, result = memberMask(player), ""
+        for index, key in ipairs({ "T", "H", "D" }) do
+            if hasRole(mask, roles[index].bit) then result = result .. key end
+        end
+        return result
+    end
+    ctx.resolveName = function(name)
+        if not name or name == "" then return end
+        if roster[name] then return name end
+        local full = fullName(name)
+        if roster[full] then return full end
+        local wanted = utf8Lower(name)
+        for key, entry in pairs(roster) do
+            if utf8Lower(entry.displayName or "") == wanted or utf8Lower(key) == wanted then return key end
+        end
+    end
+    ctx.roleControl = function(parent, index, x, y) return roleControl(parent, roles[index], x, y) end
+    ctx.panel, ctx.contrastPanel, ctx.button, ctx.icon = panel, contrastPanel, button, addonIcon
+    ctx.inCombat = uiInCombat
+    ctx.dungeons = function() return addon.groupDungeons end
+    ctx.finder = function() return addon.finderContext(true) end
+    ctx.itemName = market.itemName
+    ctx.itemIcon = market.itemIcon
+    ctx.recipeName = market.recipeName
+    ctx.recipeTooltip = function(id) pcall(GameTooltip.SetHyperlink, GameTooltip, "spell:" .. id) end
+    ctx.itemQualityColor = function(id)
+        local getInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+        local quality = getInfo and select(3, getInfo(id))
+        local c = quality and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[quality]
+        return c and { c.r, c.g, c.b } or nil
+    end
+    ctx.partnerActive = function() return addon.partnerActive() and true or false end
+    ctx.partnerEvents = function()
+        local result = {}
+        if not guildKey then return result end
+        local known = addon.guildPartners.store(guildKey).known or {}
+        for id, event in pairs(addon.guildPartners.events(guildKey)) do
+            local partner = known[event.from]
+            result[#result + 1] = { id = "partner:" .. id, owner = event.owner, token = event.token, rev = 1,
+                cat = event.activity and "dungeon" or "other", mode = "plan", status = event.closed and "closed" or "open",
+                title = event.title, starts = event.ends, dungeon = event.activity, model = "open", signups = {}, decisions = {},
+                partnerGuild = partner and partner.name or "?" }
+        end
+        return result
+    end
+    -- Former dungeon dates (BoardNotes kind "G"), shown in the new view.
+    ctx.legacy = function()
+        local result = {}
+        if not guildKey then return result end
+        for _, note in pairs(addon.boardNotes.records(guildKey)) do
+            if note.kind == "G" and (roster[note.owner] or note.owner == player or not next(roster)) then
+                result[#result + 1] = addon.events.fromLegacy(note, function(name) return roster[name] ~= nil end)
+            end
+        end
+        return result
+    end
+    ctx.legacyReply = function(ev)
+        local note = guildKey and addon.boardNotes.records(guildKey)[ev.owner .. "/" .. ev.token]
+        if not note or not ctx.ready() then return end
+        local role
+        if note.slots then
+            local mine = ctx.myRoles()
+            for _, key in ipairs({ "D", "H", "T" }) do
+                if note.slots[key] > 0 and (mine == "" or mine:find(key, 1, true)) then role = key end
+            end
+            for _, key in ipairs({ "D", "H", "T" }) do if not role and note.slots[key] > 0 then role = key end end
+        end
+        addon.boardNotes.reply(note, player, orderClock(), broadcastOrder, role)
+        addon.eventsUI.refresh()
+    end
+    ctx.legacyClose = function(ev)
+        local note = guildKey and addon.boardNotes.records(guildKey)[ev.owner .. "/" .. ev.token]
+        if note and note.owner == player and ctx.ready() then addon.boardNotes.close(note, player, broadcastOrder) end
+        addon.eventsUI.refresh()
+    end
+    ctx.boardTab = function() return window and window.boardTab end
+    -- Guild members for the co-organizer list.
+    ctx.members = function()
+        local result = {}
+        for key, entry in pairs(roster) do
+            result[#result + 1] = { name = key, displayName = entry.displayName or key, class = entry.class,
+                level = entry.level, online = entry.online == true }
+        end
+        return result
+    end
+    -- Opens the member in the guild overview (profile with professions and roles).
+    ctx.showMember = function(name)
+        if uiInCombat() or not roster[name] then return end
+        if not window or not window:IsShown() then toggle() end
+        if not window then return end
+        if window.rosterSearch and window.rosterSearch.SetText then window.rosterSearch:SetText("") end
+        rosterSelected = name
+        activeTab = "roster"
+        refresh()
+    end
+    ctx.openEvent = function(id)
+        if uiInCombat() then return end
+        if not window or not window:IsShown() then toggle() end
+        if not window then return end
+        activeTab = "board"
+        refresh()
+        if window.showBoardSection then window.showBoardSection("G") end
+        addon.eventsUI.select(id)
+    end
+    addon.eventCtx = ctx
     return ctx
 end
 
@@ -5216,8 +4762,8 @@ end
 
 local function closeCombatWindows()
     for _, dialog in pairs({ window, _G.ForeverGuildSettingsWindow, setupDialog, exportFrame,
-        orderDialog, orderMenu, window and window.boardCatalog, window and window.groupComposer,
-        _G.ForeverGuildMarketPrompt, _G.ForeverGuildLegacyOrders, _G.ForeverGuildMarketNotes }) do
+        orderDialog, orderMenu, window and window.boardCatalog, _G.ForeverGuildEventWizard, _G.ForeverGuildEventSignup,
+        _G.ForeverGuildEventConfirm, _G.ForeverGuildEventMessage, _G.ForeverGuildMarketPrompt, _G.ForeverGuildLegacyOrders, _G.ForeverGuildMarketNotes }) do
         if type(dialog) == "table" and dialog.IsShown and dialog:IsShown() then dialog:Hide() end
     end
     if addon.tour then addon.tour.pauseForCombat() end

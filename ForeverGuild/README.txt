@@ -202,6 +202,36 @@ keine Schrift. Name, Zone und Stufe werden im Addon in Deutsch
 oder Englisch angezeigt (Englisch als Fallback). Eigene Titel
 und Notizen werden im Wortlaut angezeigt.
 
+Gruppen & Events (ab 0.9.66)
+Am Schwarzen Brett heißt „Gruppe suchen“ jetzt „Gruppen & Events“.
+Registerkarten: Übersicht, Kalender, Meine Anmeldungen, Meine
+Events, Verlauf. „Gruppe oder Event erstellen“ führt in vier
+Schritten durch Aktivität, Details, Termin & Teilnehmer und
+Zusammenfassung. Aktivitäten: Dungeon, Questgruppe, Ruf-Farming;
+weitere folgen („Coming Soon“). Jede Aktivität ist ein geplanter
+Termin (Datum mit Kalender, Stunde, Minuten im Viertelstundentakt).
+Rechtsklick auf Events, Kalendertage und Teilnehmer zeigt alle
+erlaubten Aktionen (bearbeiten, kopieren, absagen, archivieren,
+löschen, anmelden, anflüstern, einladen …). Löschen geht erst
+nach einer Absage, wenn sich Spieler angemeldet haben.
+Bestätigt wird nur durch den Client des Organisators.
+Einladungen in die WoW-Gruppe nur per Klick. Bisherige
+Dungeon-Termine bleiben sichtbar und können ins neue Format
+übernommen werden. Ältere ForeverGuild-Versionen sehen die
+neuen Events nicht.
+
+Gildenbank (ab 0.9.66)
+Kompakte Bestandsanzeige: Gegenstände in Kategorieblöcken
+nebeneinander, Gold der Gildenbank oben rechts, Zeitpunkt der
+letzten erfolgreichen Erfassung. Suche, Kategorie- und
+Qualitätsfilter, „Identische Gegenstände zusammenfassen“ (nur
+Anzeige). Tresor einlesen und Gildenstand abrufen wie bisher;
+Einstellungen über das Zahnrad bzw. die zentralen Einstellungen.
+Gewünschte Hintergrundgrafik (noch nicht vorhanden):
+Art/GuildVault.tga, 1024 × 512 Pixel (2:1), TGA 32 Bit, ohne
+Text, Rahmen oder Slots. Bis dahin bleibt der bisherige
+Hintergrund.
+
 Rollen & Rechte (ab 0.9.52)
 Gildenverwaltung → Rollen & Rechte.
 Der Gildenmeister konfiguriert das Grundprofil und drei zusätzliche

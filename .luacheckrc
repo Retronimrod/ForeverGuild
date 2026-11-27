@@ -25,6 +25,11 @@ read_globals = {
     "Minimap", "QueryGuildBankTab", "RAID_CLASS_COLORS", "CLASS_ICON_TCOORDS","SetCurrentGuildBankTab", "UIParent",
     "UISpecialFrames", "UnitAffectingCombat", "UnitClass", "UnitFactionGroup", "UnitFullName",
     "date", "geterrorhandler", "strlower", "time",
+    -- Groups & events (0.9.66): quest log, link insertion, context menus, guild chat post.
+    "C_QuestLog", "ChatEdit_InsertLink", "GetCursorPosition", "C_Reputation", "GetNumFactions", "GetFactionInfo",
+    "ExpandFactionHeader",
+    -- Guild bank 0.9.66 display (guarded).
+    "BreakUpLargeNumbers", "IsModifiedClick", "MenuUtil", "SendChatMessage", "hooksecurefunc", "tinsert",
 }
 
 -- Vom Addon selbst gesetzte globale Namen (SavedVariables, Slash-Befehle).
@@ -35,7 +40,7 @@ globals = {
     "ForeverGuildLog", "ForeverGuildOrderRelays", "ForeverGuildOrderSequence",
     "ForeverGuildOrders", "ForeverGuildOwnRoles", "ForeverGuildRoleRecords",
     "ForeverGuildRoles", "ForeverGuildSettings", "ForeverGuildSetupShown",
-    "SLASH_FOREVERGUILD1",
+    "ForeverGuildEvents", "SLASH_FOREVERGUILD1",
 }
 
 -- Rezeptkataloge: generierte Datentabellen, lange Zeilen sind hier kein Stilproblem.

@@ -102,6 +102,7 @@ _G.UnitLevel = function() return 52 end
 _G.GetInventoryItemLink = function() return nil end
 _G.ForeverGuildSettings = {}
 for _, file in ipairs({ "Locale.lua", "ItemStats.lua", "RecipeFinder.lua", "Orders.lua", "Market.lua", "Board.lua",
+    "GroupActivities.lua", "BoardNotes.lua", "Events.lua", "EventsUI.lua", "EventWizard.lua",
     "MarketUI.lua", "Settings.lua", "Tour.lua" }) do
     assert(loadfile("ForeverGuild/" .. file))("ForeverGuild", addon)
 end

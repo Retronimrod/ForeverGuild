@@ -58,8 +58,17 @@ local function buildSteps()
             prepare = function(w) if w.showBoardSection then w.showBoardSection("orders") end end,
             target = function(w) return w.boardOrders and w.boardOrders.listPanel end },
         { id = "groups", title = "TOUR_T_GROUPS", text = "TOUR_GROUPS", tab = "board", icon = icons().groups,
-            prepare = function(w) if w.showBoardSection then w.showBoardSection("G") end end,
-            target = function(w) return w.groupList end },
+            prepare = function(w)
+                if w.showBoardSection then w.showBoardSection("G") end
+                addon.eventsUI.showTab("overview")
+            end,
+            target = function(w) return w.eventsView and w.eventsView.listPanel end },
+        { id = "calendar", title = "TOUR_T_CALENDAR", text = "TOUR_CALENDAR", tab = "board", icon = icons().groups,
+            prepare = function(w)
+                if w.showBoardSection then w.showBoardSection("G") end
+                addon.eventsUI.showTab("calendar")
+            end,
+            target = function(w) return w.eventsView and w.eventsView.calendar and w.eventsView.calendar.grid end },
     }
     if window and window.bank then
         list[#list + 1] = { id = "bank", title = "TOUR_T_BANK", text = "TOUR_BANK", tab = "bank", icon = icons().bank,
